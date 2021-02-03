@@ -22,6 +22,65 @@ def triangle_mesh_area(mesh):
     return area
 
 
+# Import cameras.txt file from COLMAP and save a list of cameras.
+# If there is only one cameras specified, then it just returns a camera.
+def import_cameras_file(fn):
+    with open(fn) as f_obj:
+        lines_obj = f_obj.readlines()
+
+    # remove comments
+    k = 0
+    non_whitespace = len(lines_obj[k]) - len(lines_obj[k].lstrip())
+    while lines_obj[k][non_whitespace] == "#":
+        k = k + 1
+        non_whitespace = len(lines_obj[k]) - len(lines_obj[k].lstrip())
+    lines_obj = lines_obj[k:]
+
+    cameras = []
+
+    for k in range(0, len(lines_obj), 2):
+        cameras.append(camera())
+        params = lines_obj[k].split(" ")
+        cameras[k/2].camera_id = int(params[0])
+        cameras[k/2].model = params[1]
+        cameras[k/2].width = int(params[2])
+        cameras[k/2].height = int(params[3])
+        cameras[k/2].focal_length = float(params[4])
+        cameras[k/2].principal_pt = np.asarray(params[5:], dtype='float')
+
+    if len(cameras) == 1:
+        return cameras[0]
+    else:
+        return cameras
+
+
+# Import an images.txt file from COLMAP and save a list of images
+def import_images_file(fn):
+    with open(fn) as f_obj:
+        lines_obj = f_obj.readlines()
+
+    # remove comments
+    k = 0
+    non_whitespace = len(lines_obj[k]) - len(lines_obj[k].lstrip())
+    while lines_obj[k][non_whitespace] == "#":
+        k = k + 1
+        non_whitespace = len(lines_obj[k]) - len(lines_obj[k].lstrip())
+    lines_obj = lines_obj[k:]
+
+    images = []
+
+    for k in range(0, len(lines_obj), 2):
+        images.append(image())
+        params = lines_obj[k].split(" ")
+        images[k/2].image_id = int(params[0])
+        images[k/2].quaternion = np.asarray(params[1:5], dtype='float')
+        images[k/2].translation = np.asarray(params[5:8], dtype='float')
+        images[k/2].camera_id = int(params[8])
+        images[k/2].name = params[9][:-2]
+
+    return images
+
+
 class voxel_label_base:
     def __init__(self, voxelGrid, min_bound=None, max_bound=None):
         voxels = voxelGrid.get_voxels()
@@ -201,81 +260,19 @@ class voxel_labelled(voxel_label_base):
 class camera:
     def __init__(self):
         self.camera_id = -1
-        self.model = []
+        self.model = ""
         self.width = 0.0
         self.height = 0.0
         self.focal_length = 0.0
         self.principal_pt = np.array([0, 0])
 
-    def import_cameras_file(self, fn):
-        with open(fn) as f_obj:
-            lines_obj = f_obj.readlines()
-
-        # remove comments
-        k = 0
-        non_whitespace = len(lines_obj[k]) - len(lines_obj[k].lstrip())
-        while lines_obj[k][non_whitespace] == "#":
-            k = k + 1
-            non_whitespace = len(lines_obj[k]) - len(lines_obj[k].lstrip())
-        lines_obj = lines_obj[k:]
-
-        n_cameras = int(np.ceil(len(lines_obj)/2.0))
-
-        self.camera_id = -np.ones((n_cameras,))
-        self.width = np.zeros((n_cameras,))
-        self.height = np.zeros((n_cameras,))
-        self.focal_length = np.zeros((n_cameras,))
-        self.principal_pt = np.zeros([n_cameras, 2])
-
-        k = 0
-        for k in range(0, len(lines_obj), 2):
-            params = lines_obj[k].split(" ")
-            self.camera_id[k/2] = int(params[0])
-            self.model.append(params[1])
-            self.width[k/2] = int(params[2])
-            self.height[k/2] = int(params[3])
-            self.focal_length[k/2] = float(params[4])
-            self.principal_pt[k/2, :] = np.asarray(params[5:], dtype='float')
-
-            k = k + 1
-
-    # For a given image
     # def pt2image_project(self, pts, image):
 
 
-class images:
+class image:
     def __init__(self):
         self.image_id = -1
         self.quaternion = np.array([1, 0, 0, 0])
         self.translation = np.array([0, 0, 0, 0])
         self.camera_id = -1
-        self.name = []
-
-    def import_images_file(self, fn):
-        with open(fn) as f_obj:
-            lines_obj = f_obj.readlines()
-
-        # remove comments
-        k = 0
-        non_whitespace = len(lines_obj[k]) - len(lines_obj[k].lstrip())
-        while lines_obj[k][non_whitespace] == "#":
-            k = k + 1
-            non_whitespace = len(lines_obj[k]) - len(lines_obj[k].lstrip())
-        lines_obj = lines_obj[k:]
-
-        n_images = int(np.ceil(len(lines_obj)/2.0))
-
-        self.image_id = -np.ones((n_images,))
-        self.quaternion = np.zeros([n_images, 4])
-        self.translation = np.zeros([n_images, 3])
-        self.camera_id = -np.ones((n_images,))
-
-        for k in range(0, len(lines_obj), 2):
-            params = lines_obj[k].split(" ")
-            self.image_id[k/2] = int(params[0])
-            self.quaternion[k/2, :] = np.asarray(params[1:5], dtype='float')
-            self.translation[k/2, :] = np.asarray(params[5:8], dtype='float')
-            self.camera_id[k/2] = int(params[8])
-            self.name.append(params[9][:-2])
-
-            k = k + 1
+        self.name = ""
