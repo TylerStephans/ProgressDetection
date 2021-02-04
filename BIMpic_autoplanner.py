@@ -66,11 +66,9 @@ for line in lines_obj:
         k = k + 1
 
 print "Importing COLMAP meta files"
-cameras = o3de.camera()
-cameras.import_cameras_file(fn_cameras)
+cameras = o3de.import_cameras_file(fn_cameras)
 
-images = o3de.images()
-images.import_images_file(fn_images)
+images = o3de.import_images_file(fn_images)
 
 print "Generating point clouds and removing unwanted elements"
 # Loop through every named object from the obj in reverse order, remove onces
@@ -129,22 +127,28 @@ voxel_reference.create_element_labels(elements)
 print "Creating labelled voxel"
 voxel_labelled = voxel_reference.export_voxel_labelled(range(len(elements)))
 
-print "Creat test voxel"
-test_elements = range(0, len(elements), 2)
-voxel_label_test = voxel_reference.export_voxel_labelled(test_elements)
+# print "Creat test voxel"
+# test_elements = range(0, len(elements), 2)
+# voxel_label_test = voxel_reference.export_voxel_labelled(test_elements)
 
-print "Plotting labelled voxel"
+# print "Plotting labelled voxel"
 # voxel_labelled.visualize(
 #     "elements",
 #     np.array([elements[k]['color'] for k in range(len(elements))]),
 #     plot_geometry=[mesh_p]
 # )
 
-print "Plotting test labelled voxel"
-voxel_label_test.visualize(
-    "elements",
-    np.array([elements[k]['color'] for k in test_elements]),
-    plot_geometry=[]
-)
+# print "Plotting test labelled voxel"
+# voxel_label_test.visualize(
+#     "elements",
+#     np.array([elements[k]['color'] for k in test_elements]),
+#     plot_geometry=[]
+# )
+
+
+print "Labeling blocked voxels in as-planned model."
+voxel_labelled.create_planned_labels(cameras, images)
+
+voxel_labelled.visualize("planned")
 
 print('done!')

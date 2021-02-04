@@ -1,6 +1,10 @@
 import open3d.open3d as o3d
 import numpy as np
-# import matplotlib.pyplot as plt
+# from skimage.morphology import convex_hull_image
+from scipy.spatial import ConvexHull, Delaunay
+# import pickle
+
+import matplotlib.pyplot as plt
 # from mpl_toolkits.mplot3d import Axes3D
 
 
@@ -43,8 +47,7 @@ def import_cameras_file(fn):
         params = lines_obj[k].split(" ")
         cameras[k/2].camera_id = int(params[0])
         cameras[k/2].model = params[1]
-        cameras[k/2].width = int(params[2])
-        cameras[k/2].height = int(params[3])
+        cameras[k/2].size = np.asarray((params[2:4]), dtype='int')
         cameras[k/2].focal_length = float(params[4])
         cameras[k/2].principal_pt = np.asarray(params[5:], dtype='float')
 
@@ -52,6 +55,26 @@ def import_cameras_file(fn):
         return cameras[0]
     else:
         return cameras
+
+
+def convex_fill(pixels, size, only_index=False):
+    hull = ConvexHull(pixels)
+    deln = Delaunay(pixels[hull.vertices])
+
+    # restrict to area bounded by max and min of convex hull
+    y = np.arange(hull.min_bound[0], hull.max_bound[0])
+    x = np.arange(hull.min_bound[1], hull.max_bound[1])
+    idx = np.stack(np.meshgrid(y, x), axis=-1)
+
+    # indices of pixels in convex hull
+    out_idx = np.asarray(np.nonzero(deln.find_simplex(idx) + 1)).T
+    out_idx = np.flip(out_idx, axis=1) + hull.min_bound.astype('int')
+    if not only_index:
+        out_image = np.zeros(size, dtype='u1')
+        out_image[out_idx[:, 0], out_idx[:, 1]] = 1
+        return out_image
+    else:
+        return out_idx
 
 
 # Import an images.txt file from COLMAP and save a list of images
@@ -77,6 +100,7 @@ def import_images_file(fn):
         images[k/2].translation = np.asarray(params[5:8], dtype='float')
         images[k/2].camera_id = int(params[8])
         images[k/2].name = params[9][:-2]
+        images[k/2].calc_rotation_matrix()
 
     return images
 
@@ -191,7 +215,7 @@ class voxel_labelled(voxel_label_base):
         self.max_bound = max_bound
 
         # label for as-planned model
-        self.planned = np.array(['o']*length)
+        self.planned = np.array(['b']*length)
         # label for as-built model
         self.built = np.array(['e']*length)
 
@@ -206,6 +230,12 @@ class voxel_labelled(voxel_label_base):
             # negative label means the voxel was not matched with an element
             label_unique = label_unique[label_unique >= 0]
             labels = self.elements
+        elif label_to_plot == "planned":
+            label_colors = np.array([[1, 0, 0],
+                                     [0, 1, 0],
+                                     [0, 0, 0]])
+            label_unique = np.array(["e", "o", "b"])
+            labels = self.planned
 
         if label_colors is None:
             label_colors = np.random.rand(len(label_unique), 3)
@@ -254,25 +284,163 @@ class voxel_labelled(voxel_label_base):
         # plt.show()
         print("plotted!")
 
-    # def create_built_labels(self, camera, images):
+    # To speed things up, I could have a check that if every voxel has been
+    # labelled as visible, then stop loop
+    def create_planned_labels(self, camera, images):
+        # number of pixels which must be changed on the marker_board in order
+        # for a voxel to be considered observed by an image
+        threshold = 0
+
+        grid_offset = np.array([[0, 0, 0],
+                                [0, 0, 1],
+                                [0, 1, 0],
+                                [0, 1, 1],
+                                [1, 0, 0],
+                                [1, 0, 1],
+                                [1, 1, 0],
+                                [1, 1, 1]])
+
+        pts = self.grid_index*self.voxel_size + \
+            self.voxel_size/2.0 + self.origin
+
+        for image in images:
+            print "Looking at %s" % image.name
+
+            marking_board = np.zeros(np.flip(camera.size), dtype='u1')
+            image_xyz = image.dcm.T.dot(-image.translation)
+
+            # Before doing this, eventually I should check what voxels
+            # actually can be seen in this image. This way I won't waist
+            # checking voxels I can't see.
+            voxel_distance = np.linalg.norm(pts - image_xyz, axis=1)
+
+            indices = np.argsort(voxel_distance)
+
+            # For saving workspace for debugging
+            # dump = [camera, image, observe_threshold, grid_offset, marking_board, indices, self]
+            # with open('create_planned_labels.pkl', 'w') as f:  # Python 3: open(..., 'wb')
+            #     pickle.dump(dump, f)
+
+            for index in indices:
+                vertices = ((grid_offset + self.grid_index[index, :])
+                            * self.voxel_size + self.origin)
+
+                pixels = np.floor(camera.project_pt2image(vertices,
+                                                          image)).astype('int')
+
+                inside_image = (np.all(pixels >= 0, axis=1) &
+                                np.all(pixels < np.flip(camera.size), axis=1))
+                if np.all(inside_image):
+                    # insert new method here
+                    # board_cur[pixels[:, 1], pixels[:, 0]] = 1
+                    # indices of projection
+                    ind_pj = convex_fill(pixels, np.flip(camera.size),
+                                         only_index=True)
+                elif np.sum(inside_image) >= 1:
+                    min_pixels = np.min(
+                        np.concatenate(
+                            (np.zeros((1, 2), dtype='int'), pixels),
+                            axis=0), axis=0)
+                    max_pixels = np.max(
+                        np.concatenate(
+                            (np.flip(camera.size[np.newaxis, :]), pixels),
+                            axis=0), axis=0)
+                    needed_size = max_pixels - min_pixels
+                    offset = -min_pixels
+                    # pixels = pixels + offset
+
+                    # insert new method here
+                    # board_tmp = np.zeros(np.flip(needed_size),
+                    #                      dtype='int')
+                    # board_tmp[pixels[:, 1], pixels[:, 0]] = 1
+                    ind_tmp = convex_fill(pixels, needed_size,
+                                          only_index=True)
+                    ind_in = (np.all(ind_tmp >= 0, axis=1) &
+                              np.all(ind_tmp < np.flip(camera.size), axis=1))
+                    ind_pj = ind_tmp[ind_in, :]
+                    #board_cur = board_tmp[offset[0]:(offset[0] + camera.size[1]),
+                    #                      offset[1]:(offset[1] + camera.size[0])]
+                else:
+                    continue
+
+                n_occluded = np.sum(marking_board[ind_pj[:, 0], ind_pj[:, 1]])
+                n_observed = ind_pj.shape[0] - n_occluded
+                if n_observed > threshold:
+                    self.planned[index] = "o"
+                # I assume that if a voxel is labelled as occupied then it
+                # must have already been seen.
+                elif self.planned[index] != "o" and n_observed <= threshold:
+                    self.planned[index] = "b"
+                # NOTE: I am assuming here that every voxel in this
+                # voxel_labelled is occupied
+                marking_board[ind_pj[:, 0], ind_pj[:, 1]] = 1
+
+            # plt.imshow(marking_board)
+            # plt.show()
 
 
 class camera:
     def __init__(self):
         self.camera_id = -1
         self.model = ""
-        self.width = 0.0
-        self.height = 0.0
+        self.size = np.zeros((2,))
         self.focal_length = 0.0
         self.principal_pt = np.array([0, 0])
 
-    # def pt2image_project(self, pts, image):
+    # Given array of pts, return pixel coordinates in image
+    def project_pt2image(self, pts, image):
+        X = np.concatenate((pts, np.ones([pts.shape[0], 1])), axis=1)
+
+        M_ex = np.concatenate((image.dcm, image.translation[:, np.newaxis]),
+                              axis=1)
+        M_in = np.array([[self.focal_length, 0, self.principal_pt[0]],
+                         [0, self.focal_length, self.principal_pt[1]],
+                         [0,                 0,                 1.0]])
+
+        p_h = M_in.dot(M_ex.dot(X.T))
+
+        # return the pixels such that y pixel values are in the first column
+        # and x are in the second. This will make it easier to index with them
+        return np.transpose(p_h[1::-1, :]/p_h[2, :])
 
 
 class image:
     def __init__(self):
         self.image_id = -1
         self.quaternion = np.array([1, 0, 0, 0])
-        self.translation = np.array([0, 0, 0, 0])
+        self.translation = np.array([0, 0, 0])
         self.camera_id = -1
         self.name = ""
+
+    def calc_rotation_matrix(self):
+        q0 = self.quaternion[0]
+        q1 = self.quaternion[1]
+        q2 = self.quaternion[2]
+        q3 = self.quaternion[3]
+
+        self.dcm = np.zeros([3, 3])
+        self.dcm[0, 0] = q0**2 + q1**2 - q2**2 - q3**2
+        self.dcm[0, 1] = 2*(q1*q2 + q0*q3)
+        self.dcm[0, 2] = 2*(q1*q3 - q0*q2)
+        self.dcm[1, 0] = 2*(q1*q2 - q0*q3)
+        self.dcm[1, 1] = q0**2 - q1**2 + q2**2 - q3**2
+        self.dcm[1, 2] = 2*(q2*q3 + q0*q1)
+        self.dcm[2, 0] = 2*(q1*q3 + q0*q2)
+        self.dcm[2, 1] = 2*(q2*q3 - q0*q1)
+        self.dcm[2, 2] = q0**2 - q1**2 - q2**2 + q3**2
+
+        # a = self.quaternion[0]
+        # b = self.quaternion[1]
+        # c = self.quaternion[2]
+        # d = self.quaternion[3]
+
+        # self.dcm[0, 0] = 2*a**2 - 1 + 2*b**2
+        # self.dcm[0, 1] = 2*b*c + 2*a*d
+        # self.dcm[0, 2] = 2*b*d - 2*a*c
+        # self.dcm[1, 0] = 2*b*c - 2*a*d
+        # self.dcm[1, 1] = 2*a**2 - 1 + 2*c**2
+        # self.dcm[1, 2] = 2*c*d + 2*a*b
+        # self.dcm[2, 0] = 2*b*d + 2*a*c
+        # self.dcm[2, 1] = 2*c*d - 2*a*b
+        # self.dcm[2, 2] = 2*a**2 - 1 + 2*d**2
+        self.dcm = self.dcm.T
