@@ -34,7 +34,7 @@ print(mesh_p)
 vert_p = np.asarray(mesh_p.vertices)
 
 # parse .obj file to find indices of named objects (building elements)
-print "Parsing *.obj file..."
+print "Parsing *.obj file"
 elements = []
 
 with open(fn_asPlanned) as f_obj:
@@ -112,8 +112,6 @@ voxelGrid_p = o3d.geometry.VoxelGrid.create_from_point_cloud_within_bounds(
     pcd_p, voxel_size, min_bound_coord, max_bound_coord
 )
 print(voxelGrid_p)
-# o3d.visualization.draw_geometries([voxelGrid_p])
-# o3d.visualization.draw_geometries([pcd_b, pcd_p])
 
 # Convert voxel grid into custom format to save labels
 voxel_reference = o3de.voxel_label_reference(voxelGrid_p,
