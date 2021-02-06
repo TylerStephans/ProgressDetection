@@ -151,8 +151,7 @@ def import_BIM(fn, min_bound_coord, max_bound_coord, point_cloud_density):
             print("Saved %s as point cloud with %G points."
                   % (elements[k]['name'], n_pts))
             pcd_temp = mesh_temp.sample_points_poisson_disk(n_pts)
-            elements[k]['point_cloud'] = \
-                pcd_temp.paint_uniform_color(elements[k]['color'])
+            elements[k]['point_cloud'] = np.asarray(pcd_temp.points)
         else:
             elements_to_delete.append(k)
 
@@ -244,7 +243,7 @@ class voxel_label_reference(voxel_label_base):
 
             k_element = 0
             for element in elements:
-                pts_cur = np.asarray(element['point_cloud'].points)
+                pts_cur = element['point_cloud']
 
                 n_inside = np.sum(np.all(np.logical_and(
                     pts_cur >= voxel_min_coord, pts_cur <= voxel_max_coord
