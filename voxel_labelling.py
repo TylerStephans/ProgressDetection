@@ -121,9 +121,10 @@ def import_BIM(fn, min_bound_coord, max_bound_coord, point_cloud_density):
             k = k + 1
 
     print "Generating point clouds and removing unwanted elements"
-    # Loop through every named object from the obj in reverse order, remove onces
-    # which fall outside the specified bounds, and save point clouds of the ones
-    # that don't
+    # Loop through every named object from the obj in reverse order, mark ones
+    # which fall outside the specified bounds, and save point clouds of the
+    # ones that don't
+    elements_to_delete = []
     for k in range(len(elements)-1, -1, -1):
         # Remove every other element from the triangle mesh by remove their
         # vertices
@@ -138,8 +139,8 @@ def import_BIM(fn, min_bound_coord, max_bound_coord, point_cloud_density):
         if ((vert_temp >= min_bound_coord).all()
                 and (vert_temp <= max_bound_coord).all()):
             # Calculate the area of the desired element.
-            # The area is used to ensure every element has a mostly equally dense
-            # point cloud.
+            # The area is used to ensure every element has a mostly equally
+            # dense point cloud.
             n_pts = int(triangle_mesh_area(mesh_temp)/point_cloud_density)
             # if len(elements[k]['name']) > 40:
             #     elem_name = (elements[k]['name'][0:19] + " ... " +
@@ -153,7 +154,11 @@ def import_BIM(fn, min_bound_coord, max_bound_coord, point_cloud_density):
             elements[k]['point_cloud'] = \
                 pcd_temp.paint_uniform_color(elements[k]['color'])
         else:
-            del elements[k]
+            elements_to_delete.append(k)
+
+    # delete elements that were out of bounds
+    for k in elements_to_delete:
+        del elements[k]
 
     return elements, mesh_p
 
@@ -406,6 +411,26 @@ class voxel_labelled(voxel_label_base):
             if np.any(np.all(pts >= voxel_min, axis=1) &
                       np.all(pts <= voxel_max, axis=1)):
                 self.built[index] = "o"
+
+    def predict_progress(self):
+        # threshold on the probability that an element is present for it to be
+        # considered progressed
+        t_predict = 0.5
+
+        expected_elements = np.unique(self.elements)
+
+        present_elements = []
+        for element in expected_elements:
+            # this isn't working?
+            index = (self.elements == element) & (self.built != "b")
+
+            n_occupied = np.sum(self.built[index] == "o", dtype='float')
+            n_empty = np.sum(self.built[index] == "e", dtype='float')
+
+            if n_occupied/(n_occupied + n_empty) > t_predict:
+                present_elements.append(element)
+
+        return present_elements
 
     def visualize(self, label_to_plot, label_colors=None, plot_geometry=[]):
         pts = self.grid_index*self.voxel_size + \

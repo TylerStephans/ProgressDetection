@@ -9,9 +9,13 @@ np.random.seed(0)
 # Inputs
 fn_setup = "autoplanner_setup.pkl"
 fn_asBuilt = r"fused.ply"
-fn_asPlanned = r"corner_flat_s6.obj"
+fn_asPlanned = r"corner_flat.obj"
 fn_cameras = r"cameras.txt"
 fn_images = r"images.txt"
+
+BIM_order = [0, 1, 2, 6, 7, 8, 9, 10, 11, 12, 13, 4, 14, 5, 15, 16, 17, 18, 19]
+
+continue_after_import = True
 
 voxel_size = 0.01
 point_cloud_density = 0.00002  # surface area / number of points
@@ -35,7 +39,7 @@ try:
     # pcd_p = o3d.geometry.PointCloud()
     # voxelGrid_p = o3d.geometry.VoxelGrid()
     # voxel_reference =
-    with open(fn_setup) as f_setup:
+    with open(fn_setup, 'r') as f_setup:
         print "Loading autoplanner setup file"
         (point_cloud_density, elements, cameras,
          images, pcd_p, voxelGrid_p, voxel_reference) = pickle.load(f_setup)
@@ -75,34 +79,59 @@ except IOError:
     with open(fn_setup, 'w') as f_setup:
         pickle.dump(dump, f_setup)
 
-print "Creating labelled voxel"
-voxel_labelled = voxel_reference.export_voxel_labelled(range(len(elements)))
 
-# print "Creat test voxel"
-# test_elements = range(0, len(elements), 2)
-# voxel_label_test = voxel_reference.export_voxel_labelled(test_elements)
+if continue_after_import:
 
-# print "Plotting labelled voxel"
-# voxel_labelled.visualize(
-#     "elements",
-#     np.array([elements[k]['color'] for k in range(len(elements))]),
-#     plot_geometry=[mesh_p]
-# )
+    found_all_elements = True
+    step = 0
+    while found_all_elements:
+        expected_elements = BIM_order[:step]
 
-# print "Plotting test labelled voxel"
-# voxel_label_test.visualize(
-#     "elements",
-#     np.array([elements[k]['color'] for k in test_elements]),
-#     plot_geometry=[]
-# )
+        print "Creating labelled voxel"
+        voxel_labelled = voxel_reference.export_voxel_labelled(expected_elements)
 
+        # print "Plotting labelled voxel"
+        # voxel_labelled.visualize(
+        #     "elements",
+        #     np.array([elements[k]['color'] for k in range(len(elements))]),
+        #     plot_geometry=[mesh_p]
+        # )
 
-print "Labeling blocked voxels in as-planned model."
-voxel_labelled.create_planned_labels(cameras, images)
+        print "Labeling blocked voxels in as-planned model."
+        voxel_labelled.create_planned_labels(cameras, images)
 
-print "Labeling occupied voxels in as-built model."
-voxel_labelled.create_built_labels(pcd_b)
+        print "Labeling occupied voxels in as-built model."
+        voxel_labelled.create_built_labels(pcd_b)
 
-voxel_labelled.visualize("built", plot_geometry=[pcd_b])
+        print "Predicting what elements are present in the as-built model."
+        found_elements = voxel_labelled.predict_progress()
+
+        found_sorted = np.sort(found_elements)
+        expected_sorted = np.sort(expected_elements)
+
+        expected_found = found_sorted == expected_sorted
+
+        if not np.all(expected_found):
+            found_all_elements = False
+            missing_elements = expected_sorted[np.logical_not(expected_found)]
+
+        # Exit the loop if the current step is the last step
+        step = step + 1
+        if step > len(BIM_order):
+            found_all_elements = False
+            missing_elements = []
+
+    print "Construction elements found:"
+    found_names = [elements[k]['name'] for k in found_elements]
+    for name in found_names:
+        print name
+
+    print "Current step is step %G with the following elements missing:"
+    expected_names = [elements[k]['name'] for k in missing_elements]
+    for name in expected_names:
+        print name
+
+    voxel_labelled.visualize("built", plot_geometry=[pcd_b])
+
 
 print('done!')
