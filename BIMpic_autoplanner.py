@@ -17,9 +17,20 @@ fn_images = r"/home/tbs5111/IRoCS_BIM2Robot/SfM/corner_n_CMU_total_10_low/sparse
 # BIM_order = [0, 1, 2, 5, 6, 7, 8, 9, 10, 11, 12,
 #              3, 13, 4, 14, 15, 16, 17, 18, 19]
 # Build first 3 levels of brick, then CMU, then finish brick
-BIM_order = [0, 1, 2, 5, 6, 7, 8, 9, 10, 11, 12, 3, 13, 4, 14,
-             20, 21, 22, 23, 24, 25,
-             15, 16, 17, 18, 19]
+# Each piece is a step
+# BIM_order = [0, 1, 2, 5, 6, 7, 8, 9, 10, 11, 12, 3, 13, 4, 14,
+#              20, 21, 22, 23, 24, 25,
+#              15, 16, 17, 18, 19]
+# BIM_order = [[k] for k in BIM_order]
+
+BIM_order = [[0, 1, 2],
+             [5, 6, 7],
+             [8, 9, 10],
+             [11, 12, 3, 13, 4],
+             [14, 20, 21],
+             [22, 23, 24],
+             [25, 15, 16],
+             ]17, 18, 19]]
 
 # After importing/generating the BIM and other files
 continue_after_import = True
@@ -86,13 +97,17 @@ except IOError:
 
 if continue_after_import:
     print "Starting searching for current step...\n"
-    found_all_elements = True
+    found_all_elements = False
     step = len(BIM_order)
-    while found_all_elements:
-        expected_elements = BIM_order[:step]
+    # Starting with the last step, loop backwards through the steps until
+    # you've found a step where you observe every element you expect to. The
+    # following step must then be the current step.
+    while not found_all_elements and step > 0:
+        cur_elements = [k_elem for k_elems in BIM_order[:step]
+                        for k_elem in k_elems]
         print "\n=========== Step %G ===========\n" % (step)
         print "Creating labelled voxel"
-        voxel_labelled = voxel_reference.export_voxel_labelled(expected_elements)
+        voxel_labelled = voxel_reference.export_voxel_labelled(cur_elements)
 
         # print "Plotting labelled voxel"
         # voxel_labelled.visualize(
@@ -103,6 +118,12 @@ if continue_after_import:
 
         print "Labeling blocked voxels in as-planned model."
         voxel_labelled.create_planned_labels(cameras, images)
+
+        # Expect to observe any element with at least one voxel not labelled
+        # as blocked. This relies on there being enough cameras to reconstruct
+        # every element visible from the images.
+        expected_elements = np.unique(
+            voxel_labelled.elements[voxel_labelled.planned != "b"])
 
         print "Labeling occupied voxels in as-built model."
         voxel_labelled.create_built_labels(pcd_b)
@@ -117,25 +138,19 @@ if continue_after_import:
         # looking for. It doesn't tell me what I missed...
         expected_found = found_sorted == expected_sorted
 
-        # Exit the loop if no elements are present
-        step = step - 1
-        if step == 0:
-            found_all_elements = False
-            missing_elements = []
-
         # Found a step with all elements present, so the current step must
         # have been the last one checked!
-        if np.all(expected_found):
-            found_all_elements = False
-            missing_elements = expected_sorted[np.logical_not(expected_found)]
+        found_all_elements = np.all(expected_found)
+        step -= 1
+
+    cur_step = step + 2
 
     print "Construction elements found:"
     found_names = [elements[k]['name'] for k in found_elements]
     for name in found_names:
         print name
 
-    print("Current step is step %G with the following elements missing:" %
-          (step + 2))
+    print "Current step is step %G." % (cur_step)
     # Missing elements is currently broken...
     # expected_names = [elements[k]['name'] for k in missing_elements]
     # for name in expected_names:
