@@ -324,7 +324,7 @@ class voxel_labelled(voxel_label_base):
     def create_planned_labels(self, camera, images):
         # number of pixels which must be changed on the marker_board in order
         # for a voxel to be considered observed by an image
-        threshold = 0
+        threshold = 20
 
         # Easy access to creating voxel vertices
         grid_offset = np.array([[0, 0, 0],
@@ -438,7 +438,7 @@ class voxel_labelled(voxel_label_base):
                     k_min, k_max = self.voxel_bounds(grid_index=k_neighbor)
                     index_taken = (self.grid_index ==
                                    k_neighbor).all(axis=1).any()
-                    
+
                     # If the current neighbor index isn't already in
                     # self.grid_index and contains an as-built point, then
                     # label as occupied
@@ -447,13 +447,13 @@ class voxel_labelled(voxel_label_base):
                                    np.all(pts <= k_max, axis=1))):
                         self.built[index] = "o"
                         found_point = True
-                    
+
                     k += 1
 
     def predict_progress(self):
         # threshold on the probability that an element is present for it to be
         # considered progressed
-        t_predict = 0.5
+        t_predict = 0.25
 
         expected_elements = np.unique(self.elements)
 
@@ -462,13 +462,17 @@ class voxel_labelled(voxel_label_base):
             # this isn't working?
             index = (self.elements == element) & (self.built != "b")
 
-            n_occupied = np.sum(self.built[index] == "o", dtype='float')
-            n_empty = np.sum(self.built[index] == "e", dtype='float')
+            n_occupied = np.sum(self.built[index] == "o", dtype='int')
+            n_empty = np.sum(self.built[index] == "e", dtype='int')
 
-            P_progress = n_occupied/(n_occupied + n_empty)
-
-            print "Element %G progress has probability %f" % (element,
-                                                              P_progress)
+            # Do not calculate probability if element is completely blocked
+            if n_occupied == 0 and n_empty == 0:
+                P_progress = np.nan
+                print "Element %G is blocked from view." % (element)
+            else:
+                P_progress = n_occupied/float(n_occupied + n_empty)
+                print "Element %G progress has probability %f" % (element,
+                                                                  P_progress)
             if P_progress > t_predict:
                 present_elements.append(element)
 
