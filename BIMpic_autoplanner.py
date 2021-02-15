@@ -7,24 +7,31 @@ import voxel_labelling as vl
 np.random.seed(0)
 
 # Inputs
-fn_setup = "autoplanner_setup.pkl"
-fn_asBuilt = r"fused.ply"
-fn_asPlanned = r"corner_flat.obj"
-fn_cameras = r"cameras.txt"
-fn_images = r"images.txt"
+fn_setup = "autoplanner_setup_corner_n_CMU.pkl"
+fn_asBuilt = r"/home/tbs5111/IRoCS_BIM2Robot/SfM/corner_n_CMU_total_10_low/dense/fused.ply"
+fn_asPlanned = r"/home/tbs5111/IRoCS_BIM2Robot/Meshes/corner_n_CMU_total.obj"
+fn_cameras = r"/home/tbs5111/IRoCS_BIM2Robot/SfM/corner_n_CMU_total_10_low/sparse/manual/cameras.txt"
+fn_images = r"/home/tbs5111/IRoCS_BIM2Robot/SfM/corner_n_CMU_total_10_low/sparse/manual/images.txt"
 
-BIM_order = [0, 1, 2, 5, 6, 7, 8, 9, 10, 11, 12, 3, 13, 4, 14, 15, 16, 17, 18, 19]
+# Order that elements are expected to be seen
+# BIM_order = [0, 1, 2, 5, 6, 7, 8, 9, 10, 11, 12,
+#              3, 13, 4, 14, 15, 16, 17, 18, 19]
+# Build first 3 levels of brick, then CMU, then finish brick
+BIM_order = [0, 1, 2, 5, 6, 7, 8, 9, 10, 11, 12, 3, 13, 4, 14,
+             20, 21, 22, 23, 24, 25,
+             15, 16, 17, 18, 19]
 
+# After importing/generating the BIM and other files
 continue_after_import = True
 
-voxel_size = 0.01
+voxel_size = 0.01  # width of voxel in meters
 point_cloud_density = 0.00002  # surface area / number of points
 
-# bounding box coordinates with about 0.1 m tolerance
-# min_bound_coord = np.array([2.8, 7.55, 0.0])
-min_bound_coord = np.array([7, 7.55, 0.0])
-# max_bound_coord = np.array([8.0 ,12.5 ,0.4])
-max_bound_coord = np.array([8.0, 8.5, 0.4])
+# bounding box coordinates with about 2 cm tolerance
+min_bound_coord = np.array([2.88, 7.64, -0.02])
+# min_bound_coord = np.array([7, 7.55, 0.0])
+max_bound_coord = np.array([7.95, 12.4, 1.0])
+# max_bound_coord = np.array([8.0, 8.5, 0.4])
 
 print "Starting import... \n"
 # import as-built and as-planned models
@@ -34,12 +41,6 @@ pcd_b = o3d.io.read_point_cloud(fn_asBuilt)
 print(pcd_b)
 
 try:
-    # elements = []
-    # cameras = vl.camera()
-    # images = []
-    # pcd_p = o3d.geometry.PointCloud()
-    # voxelGrid_p = o3d.geometry.VoxelGrid()
-    # voxel_reference =
     with open(fn_setup, 'r') as f_setup:
         print "Loading autoplanner setup file"
         (point_cloud_density, elements, cameras,
@@ -97,7 +98,7 @@ if continue_after_import:
         # voxel_labelled.visualize(
         #     "elements",
         #     np.array([elements[k]['color'] for k in range(len(elements))]),
-        #     plot_geometry=[mesh_p]
+        #     plot_geometry=[pcd_b]
         # )
 
         print "Labeling blocked voxels in as-planned model."
