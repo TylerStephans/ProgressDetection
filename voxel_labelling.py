@@ -348,24 +348,32 @@ class voxel_labelled(voxel_label_base):
 
             indices = np.argsort(voxel_distance)
 
-            # For saving workspace for debugging
-            # dump = [camera, image, observe_threshold, grid_offset, marking_board, indices, self]
-            # with open('create_planned_labels.pkl', 'w') as f:  # Python 3: open(..., 'wb')
-            #     pickle.dump(dump, f)
-
             for index in indices:
                 vertices = ((grid_offset + self.grid_index[index, :])
                             * self.voxel_size + self.origin)
+
+                X = np.concatenate((vertices, np.ones([vertices.shape[0], 1])),
+                                   axis=1)
+                M_ex = np.concatenate((image.dcm,
+                                       image.translation[:, np.newaxis]),
+                                      axis=1)
+                # voxel vertex coordinates in camera frame
+                vertices_c = M_ex.dot(X.T).T
 
                 # vertices onto image plane and return the pixel indices [y, x]
                 pixels = np.floor(camera.project_pt2image(vertices,
                                                           image)).astype('int')
 
-                # If at least one vertex of the voxel falls within the image
-                # bounds, project it onto the marking_board.
+                # which pixels fall within the image frame
                 inside_image = (np.all(pixels >= 0, axis=1) &
                                 np.all(pixels < np.flip(camera.size), axis=1))
-                if np.sum(inside_image) >= 1:
+
+                # If at least one vertex of the voxel falls within the image
+                # bounds and is infront of the camera, project it onto the
+                # marking_board.
+                in_view = ((vertices_c[:, 2] > 0).any() and
+                           np.sum(inside_image) >= 1)
+                if in_view:
                     # indices of projection
                     ind_tmp = convex_fill(pixels)
 
@@ -394,6 +402,12 @@ class voxel_labelled(voxel_label_base):
             # plt.show()
 
     def create_built_labels(self, pcd_built):
+        """
+        If a voxel contains a point from the as-built point cloud, then label
+        it as occupied. If it has no point, search the 6 neighboring voxels
+        which are not already present in the voxel grid. If a point is found
+        in the neighboring voxels, then label the original as occupied.
+        """
         # find indices for occupied, visible voxels
         indices = np.where(self.planned == "o")[0]
 
@@ -407,9 +421,34 @@ class voxel_labelled(voxel_label_base):
         for index in tqdm(indices):
             voxel_min, voxel_max = self.voxel_bounds(index=index)
 
+            # Check if the current voxel has a point
             if np.any(np.all(pts >= voxel_min, axis=1) &
                       np.all(pts <= voxel_max, axis=1)):
                 self.built[index] = "o"
+            else:
+                # generate neighboring grid indices
+                neighbor_grid = np.concatenate((np.eye(3), -np.eye(3)), axis=0)
+                neighbor_grid += self.grid_index[index, :]
+
+                found_point = False
+                k = 0
+                while not found_point and k < neighbor_grid.shape[0]:
+                    k_neighbor = neighbor_grid[k, :]
+
+                    k_min, k_max = self.voxel_bounds(grid_index=k_neighbor)
+                    index_taken = (self.grid_index ==
+                                   k_neighbor).all(axis=1).any()
+                    
+                    # If the current neighbor index isn't already in
+                    # self.grid_index and contains an as-built point, then
+                    # label as occupied
+                    if (not index_taken and
+                            np.any(np.all(pts >= k_min, axis=1) &
+                                   np.all(pts <= k_max, axis=1))):
+                        self.built[index] = "o"
+                        found_point = True
+                    
+                    k += 1
 
     def predict_progress(self):
         # threshold on the probability that an element is present for it to be
@@ -426,7 +465,11 @@ class voxel_labelled(voxel_label_base):
             n_occupied = np.sum(self.built[index] == "o", dtype='float')
             n_empty = np.sum(self.built[index] == "e", dtype='float')
 
-            if n_occupied/(n_occupied + n_empty) > t_predict:
+            P_progress = n_occupied/(n_occupied + n_empty)
+
+            print "Element %G progress has probability %f" % (element,
+                                                              P_progress)
+            if P_progress > t_predict:
                 present_elements.append(element)
 
         return present_elements
@@ -474,6 +517,8 @@ class voxel_labelled(voxel_label_base):
         plot_geometry.append(voxelGrid)
         o3d.visualization.draw_geometries(plot_geometry)
 
+        # Code for plotting displaying voxelsing using matplotlib instead.
+        # It's very slow though, so only useful for generating pictures...
         # grid_shape = np.max(self.grid_index, axis=0) + 1
         # x, y, z = np.indices(grid_shape+1)
         # x = x*self.voxel_size + self.origin[0]
@@ -552,18 +597,4 @@ class image:
         self.dcm[2, 1] = 2*(q2*q3 - q0*q1)
         self.dcm[2, 2] = q0**2 - q1**2 - q2**2 + q3**2
 
-        # a = self.quaternion[0]
-        # b = self.quaternion[1]
-        # c = self.quaternion[2]
-        # d = self.quaternion[3]
-
-        # self.dcm[0, 0] = 2*a**2 - 1 + 2*b**2
-        # self.dcm[0, 1] = 2*b*c + 2*a*d
-        # self.dcm[0, 2] = 2*b*d - 2*a*c
-        # self.dcm[1, 0] = 2*b*c - 2*a*d
-        # self.dcm[1, 1] = 2*a**2 - 1 + 2*c**2
-        # self.dcm[1, 2] = 2*c*d + 2*a*b
-        # self.dcm[2, 0] = 2*b*d + 2*a*c
-        # self.dcm[2, 1] = 2*c*d - 2*a*b
-        # self.dcm[2, 2] = 2*a**2 - 1 + 2*d**2
         self.dcm = self.dcm.T
