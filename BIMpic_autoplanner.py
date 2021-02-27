@@ -1,19 +1,25 @@
 import open3d.open3d as o3d
 import numpy as np
 import pickle
+import os
+import errno
 
 import voxel_labelling as vl
 
 np.random.seed(0)
 
 # Inputs
-fn_setup = "autoplanner_setup_corner_n_CMU.pkl"
-fn_asBuilt = r"/home/tbs5111/IRoCS_BIM2Robot/SfM/corner_n_CMU_total_10_low/dense/fused.ply"
+pn = r"./corner_n_CMU_10/"  # directory for instructions
+fn_instructions = r"corner_n_CMU_stest.txt"
+fn_setup = r"./autoplanner_setups/corner_n_CMU_total_setup.pkl"
+fn_asBuilt = r"/home/tbs5111/IRoCS_BIM2Robot/SfM/corner_n_CMU_s6_10/dense/fused.ply"
 fn_asPlanned = r"/home/tbs5111/IRoCS_BIM2Robot/Meshes/corner_n_CMU_total.obj"
-fn_cameras = r"/home/tbs5111/IRoCS_BIM2Robot/SfM/corner_n_CMU_total_10_low/sparse/manual/cameras.txt"
-fn_images = r"/home/tbs5111/IRoCS_BIM2Robot/SfM/corner_n_CMU_total_10_low/sparse/manual/images.txt"
+fn_cameras = r"/home/tbs5111/IRoCS_BIM2Robot/SfM/corner_n_CMU_s6_10/sparse/manual/cameras.txt"
+fn_images = r"/home/tbs5111/IRoCS_BIM2Robot/SfM/corner_n_CMU_s6_10/sparse/manual/images.txt"
 
-# Order that elements are expected to be seen
+# Order that elements are supposed to be placed. Each item is a step, and each
+# step must consist of a list of element indices.
+# Brick corner only
 # BIM_order = [0, 1, 2, 5, 6, 7, 8, 9, 10, 11, 12,
 #              3, 13, 4, 14, 15, 16, 17, 18, 19]
 # Build first 3 levels of brick, then CMU, then finish brick
@@ -30,13 +36,18 @@ BIM_order = [[0, 1, 2],
              [14, 20, 21],
              [22, 23, 24],
              [25, 15, 16],
-             ]17, 18, 19]]
+             [17, 18, 19]]
+
+# Each item in materials is a material. For each material, an element is said
+# to be that material if material[0] is in its name.
+materials = [["Standard_Brick", "standard_brick"],
+             ["CMU", "cmu"]]
 
 # After importing/generating the BIM and other files
 continue_after_import = True
 
 voxel_size = 0.01  # width of voxel in meters
-point_cloud_density = 0.00002  # surface area / number of points
+point_cloud_density = 50000  # number of points / surface area
 
 # bounding box coordinates with about 2 cm tolerance
 min_bound_coord = np.array([2.88, 7.64, -0.02])
@@ -51,20 +62,26 @@ print "Starting import... \n"
 pcd_b = o3d.io.read_point_cloud(fn_asBuilt)
 print(pcd_b)
 
+print "Importing COLMAP meta files"
+cameras = vl.import_cameras_file(fn_cameras)
+
+images = vl.import_images_file(fn_images)
+
+# Make directory if it doesn't already exist
+try:
+    os.makedirs(pn)
+except OSError as e:
+    if e.errno != errno.EEXIST:
+        raise
+
 try:
     with open(fn_setup, 'r') as f_setup:
         print "Loading autoplanner setup file"
-        (point_cloud_density, elements, cameras,
-         images, voxel_reference) = pickle.load(f_setup)
+        (point_cloud_density, elements, voxel_reference) = pickle.load(f_setup)
 except IOError:
     print "Importing BIM"
     elements, mesh_p = vl.import_BIM(fn_asPlanned, min_bound_coord,
                                      max_bound_coord, point_cloud_density)
-
-    print "Importing COLMAP meta files"
-    cameras = vl.import_cameras_file(fn_cameras)
-
-    images = vl.import_images_file(fn_images)
 
     # Create voxel grid from element point clouds
     pcd_p = o3d.geometry.PointCloud()
@@ -89,8 +106,7 @@ except IOError:
     voxel_reference.create_element_labels(elements)
 
     print "Saving autoplanner setup file"
-    dump = [point_cloud_density, elements, cameras,
-            images, voxel_reference]
+    dump = [point_cloud_density, elements, voxel_reference]
     with open(fn_setup, 'w') as f_setup:
         pickle.dump(dump, f_setup)
 
@@ -131,6 +147,14 @@ if continue_after_import:
         print "Predicting what elements are present in the as-built model."
         found_elements = voxel_labelled.predict_progress()
 
+        # voxel_labelled.visualize(
+        #     "elements",
+        #     np.array([elements[k]['color'] for k in range(len(elements))]))
+
+        # voxel_labelled.visualize("planned")
+
+        # voxel_labelled.visualize("built", plot_geometry=[pcd_b])
+
         found_sorted = np.sort(found_elements)
         expected_sorted = np.sort(expected_elements)
 
@@ -158,5 +182,17 @@ if continue_after_import:
 
     voxel_labelled.visualize("built", plot_geometry=[pcd_b])
 
+    print "Writing instructions for material placement."
+    # Instructions for the robot with one list item for each object to place
+    instructions = []
+    for k in BIM_order[cur_step - 1]:
+        cur_material = [material[1] for material in materials
+                        if material[0] in elements[k]['name']]
+        instructions.append(cur_material[0])
 
-print('done!')
+    with open(pn + fn_instructions, "w") as f:
+        for instruction in instructions:
+            f.write("%s\n" % instruction)
+
+
+print('Done!')

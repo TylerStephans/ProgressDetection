@@ -141,7 +141,7 @@ def import_BIM(fn, min_bound_coord, max_bound_coord, point_cloud_density):
             # Calculate the area of the desired element.
             # The area is used to ensure every element has a mostly equally
             # dense point cloud.
-            n_pts = int(triangle_mesh_area(mesh_temp)/point_cloud_density)
+            n_pts = int(triangle_mesh_area(mesh_temp)*point_cloud_density)
             # if len(elements[k]['name']) > 40:
             #     elem_name = (elements[k]['name'][0:19] + " ... " +
             #                  elements[k]['name'][-15:0])
