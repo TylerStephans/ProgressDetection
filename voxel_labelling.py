@@ -145,62 +145,74 @@ def import_BIM(fn, min_bound_coord, max_bound_coord, point_cloud_density, voxel_
 
             k = k + 1
 
-    print "Generating point clouds and removing unwanted elements"
+    print "Removing elements outside of bounds."
     # Loop through every named object from the obj in reverse order, mark ones
-    # which fall outside the specified bounds, and save point clouds of the
-    # ones that don't
+    # which fall outside the specified bounds, and remove them.
     elements_to_delete = []
-    for k in range(len(elements)-1, -1, -1):
+    vert_out_of_bounds = []
+    for k in tqdm(range(len(elements)-1, -1, -1)):
+        # Remove every other element from the triangle mesh by remove their
+        # vertices
+        to_remove = range(k) + range(k+1, len(elements))
+        vert_remove = [vert for index in to_remove for vert in
+                       elements[index]['v_index']]
+        mesh_temp = copy.deepcopy(mesh_p)
+        mesh_temp.remove_vertices_by_index(vert_remove)
+
+        vert_temp = np.asarray(mesh_temp.vertices)
+        # If any vertex in the element falls outside the bounds of interest
+        if ((vert_temp < min_bound_coord).any()
+                or (vert_temp > max_bound_coord).any()):
+            elements_to_delete.append(k)
+            vert_out_of_bounds.extend(elements[k]['v_index'])
+
+    # delete elements that were out of bounds
+    for k in elements_to_delete:
+        del elements[k]
+
+    print "Generating point clouds of elements."
+    # Sample points from every element to create a point cloud for each
+    # element that can be used for voxelization.
+    pbar = tqdm(range(len(elements)))
+    for k in pbar:
         # Remove every other element from the triangle mesh by remove their
         # vertices
         to_remove = range(k) + range(k+1, len(elements))
         vert_remove = [vert for index in to_remove for vert in
                        elements[index]["v_index"]]
+        vert_remove.extend(vert_out_of_bounds)
         mesh_temp = copy.deepcopy(mesh_p)
         mesh_temp.remove_vertices_by_index(vert_remove)
 
-        vert_temp = np.asarray(mesh_temp.vertices)
-        # If the current element is within the bounds of interest
-        if ((vert_temp >= min_bound_coord).all()
-                and (vert_temp <= max_bound_coord).all()):
-            # Calculate the area of the desired element.
-            # The area is used to ensure every element has a mostly equally
-            # dense point cloud.
-            n_pts = int(triangle_mesh_area(mesh_temp)*point_cloud_density)
-            # if len(elements[k]['name']) > 40:
-            #     elem_name = (elements[k]['name'][0:19] + " ... " +
-            #                  elements[k]['name'][-15:0])
-            # else:
-            #     elem_name = elements[k]['name']
+        # Calculate the area of the desired element.
+        # The area is used to ensure every element has a mostly equally
+        # dense point cloud.
+        n_pts = int(triangle_mesh_area(mesh_temp)*point_cloud_density)
 
-            print("Saved %s as point cloud with %G points."
-                  % (elements[k]['name'], n_pts))
-            pcd_temp = mesh_temp.sample_points_poisson_disk(n_pts)
-            pts_temp = np.asarray(pcd_temp.points)
-            elements[k]['point_cloud'] = pts_temp
-            voxelGrid_temp = (
-                o3d.geometry.VoxelGrid.create_from_point_cloud_within_bounds(
-                    pcd_temp, voxel_size, min_bound_coord, max_bound_coord)
-            )
-            elements[k]['voxel_grid'] = voxel_label_base(voxelGrid_temp,
-                                                         min_bound_coord,
-                                                         max_bound_coord)
-            elements[k]['n_pts'] = np.zeros(elements[k]['voxel_grid'].length)
-            for kv in range(elements[k]['voxel_grid'].length):
-                voxel_min_coord, voxel_max_coord = \
-                    elements[k]['voxel_grid'].voxel_bounds(index=kv)
+        # print("Saved %s as point cloud with %G points."
+        #       % (elements[k]['name'], n_pts))
+        # pcd_temp = mesh_temp.sample_points_poisson_disk(n_pts)
+        pcd_temp = mesh_temp.sample_points_uniformly(n_pts)
+        pts_temp = np.asarray(pcd_temp.points)
+        elements[k]['point_cloud'] = pts_temp
+        voxelGrid_temp = (
+            o3d.geometry.VoxelGrid.create_from_point_cloud_within_bounds(
+                pcd_temp, voxel_size, min_bound_coord, max_bound_coord)
+        )
+        elem_name = elements[k]['name'][0:40]
+        pbar.set_description(elem_name)
 
-                elements[k]['n_pts'][kv] = np.sum(np.all(np.logical_and(
-                    pts_temp >= voxel_min_coord, pts_temp <= voxel_max_coord
-                    ), axis=1))
+        elements[k]['voxel_grid'] = voxel_label_base(voxelGrid_temp,
+                                                        min_bound_coord,
+                                                        max_bound_coord)
+        elements[k]['n_pts'] = np.zeros(elements[k]['voxel_grid'].length)
+        for kv in range(elements[k]['voxel_grid'].length):
+            voxel_min_coord, voxel_max_coord = \
+                elements[k]['voxel_grid'].voxel_bounds(index=kv)
 
-            print('here')
-        else:
-            elements_to_delete.append(k)
-
-    # delete elements that were out of bounds
-    for k in elements_to_delete:
-        del elements[k]
+            elements[k]['n_pts'][kv] = np.sum(np.all(np.logical_and(
+                pts_temp >= voxel_min_coord, pts_temp <= voxel_max_coord
+                ), axis=1))
 
     return elements, mesh_p
 
