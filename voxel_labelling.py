@@ -29,6 +29,31 @@ def triangle_mesh_area(mesh):
     return area
 
 
+def triangle_mesh_volume(mesh):
+    '''
+    Calculates volume of triangle mesh based on Open3D commit:
+    https://github.com/intel-isl/Open3D/commit/6ab81875eecdf3aab7bf93dcfecc2d5a711631ce
+    '''
+    if not mesh.is_watertight:
+        raise ValueError("The mesh is not watertight, and the volume cannot" +
+                         " be computed.")
+    if not mesh.is_orientable:
+        raise ValueError("The mesh is not orientable, and the volume cannot" +
+                         " be computed.")
+
+    volume = 0.0
+    triangles = np.asarray(mesh.triangles)
+    vertices = np.asarray(mesh.vertices)
+    for tri in triangles:
+        pt1 = vertices[tri[0], :]
+        pt2 = vertices[tri[1], :]
+        pt3 = vertices[tri[2], :]
+
+        volume += pt1.dot(np.cross(pt2, pt3))/6.0
+
+    return np.abs(volume)
+
+
 # Import cameras.txt file from COLMAP and save a list of cameras.
 # If there is only one cameras specified, then it just returns a camera.
 def import_cameras_file(fn):
