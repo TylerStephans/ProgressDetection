@@ -88,7 +88,7 @@ def import_images_file(fn):
     return images
 
 
-def import_BIM(fn, min_bound_coord, max_bound_coord, point_cloud_density):
+def import_BIM(fn, min_bound_coord, max_bound_coord, point_cloud_density, voxel_size):
     mesh_p = o3d.io.read_triangle_mesh(fn)
     print(mesh_p)
 
@@ -151,7 +151,25 @@ def import_BIM(fn, min_bound_coord, max_bound_coord, point_cloud_density):
             print("Saved %s as point cloud with %G points."
                   % (elements[k]['name'], n_pts))
             pcd_temp = mesh_temp.sample_points_poisson_disk(n_pts)
-            elements[k]['point_cloud'] = np.asarray(pcd_temp.points)
+            pts_temp = np.asarray(pcd_temp.points)
+            elements[k]['point_cloud'] = pts_temp
+            voxelGrid_temp = (
+                o3d.geometry.VoxelGrid.create_from_point_cloud_within_bounds(
+                    pcd_temp, voxel_size, min_bound_coord, max_bound_coord)
+            )
+            elements[k]['voxel_grid'] = voxel_label_base(voxelGrid_temp,
+                                                         min_bound_coord,
+                                                         max_bound_coord)
+            elements[k]['n_pts'] = np.zeros(elements[k]['voxel_grid'].length)
+            for kv in range(elements[k]['voxel_grid'].length):
+                voxel_min_coord, voxel_max_coord = \
+                    elements[k]['voxel_grid'].voxel_bounds(index=kv)
+
+                elements[k]['n_pts'][kv] = np.sum(np.all(np.logical_and(
+                    pts_temp >= voxel_min_coord, pts_temp <= voxel_max_coord
+                    ), axis=1))
+
+            print('here')
         else:
             elements_to_delete.append(k)
 
