@@ -600,10 +600,37 @@ class voxel_labelled(voxel_label_base):
         return present_elements
 
     def visualize(self, label_to_plot, label_colors=None, plot_geometry=[]):
-        pts = self.grid_index*self.voxel_size + \
-            self.voxel_size/2.0 + self.origin
+        pts = self.grid_index*self.voxel_size + self.origin
+
+        # Create point cloud to generate voxel grid
         pcd = o3d.geometry.PointCloud()
-        pcd.points = o3d.utility.Vector3dVector(pts)
+        pcd.points = o3d.utility.Vector3dVector(pts + self.voxel_size/2.0)
+
+        # Create point cloud and correspondences for line set to visualize
+        # voxel edges
+        line_base = np.array(
+            [[0, 1], [0, 2], [1, 3], [2, 3], [4, 5], [4, 6], [5, 7],
+             [6, 7], [0, 4], [1, 5], [2, 6], [3, 7]]
+        )*self.length
+
+        line_iter = np.vstack(np.arange(0, self.length))
+        lines = np.concatenate([line + line_iter for line in line_base],
+                               axis=0)
+
+        line_pts_base = np.array(
+            [[0, 0, 0], [1, 0, 0], [0, 1, 0], [1, 1, 0], [0, 0, 1], [1, 0, 1],
+             [0, 1, 1], [1, 1, 1]]
+        )*self.voxel_size
+        line_pts = np.concatenate([line_pt + pts for line_pt in line_pts_base],
+                                  axis=0)
+
+        # Add voxel edges as a line set to the visualization
+        line_colors = np.zeros([lines.shape[0], 3])
+        line_set = o3d.geometry.LineSet()
+        line_set.points = o3d.utility.Vector3dVector(line_pts)
+        line_set.lines = o3d.utility.Vector2iVector(lines)
+        line_set.colors = o3d.utility.Vector3dVector(line_colors)
+        plot_geometry.append(line_set)
 
         if label_to_plot == "elements":
             label_unique = np.unique(self.elements)
