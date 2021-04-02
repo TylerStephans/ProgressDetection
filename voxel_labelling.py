@@ -113,7 +113,7 @@ def import_images_file(fn):
     return images
 
 
-def import_BIM(fn, min_bound_coord, max_bound_coord, point_cloud_density, voxel_size):
+def import_BIM(fn, min_bound_coord, max_bound_coord, point_cloud_density):
     mesh_p = o3d.io.read_triangle_mesh(fn)
     print(mesh_p)
 
@@ -195,26 +195,92 @@ def import_BIM(fn, min_bound_coord, max_bound_coord, point_cloud_density, voxel_
         pcd_temp = mesh_temp.sample_points_uniformly(n_pts)
         pts_temp = np.asarray(pcd_temp.points)
         elements[k]['point_cloud'] = pts_temp
-        voxelGrid_temp = (
-            o3d.geometry.VoxelGrid.create_from_point_cloud_within_bounds(
-                pcd_temp, voxel_size, min_bound_coord, max_bound_coord)
-        )
+
         elem_name = elements[k]['name'][0:40]
         pbar.set_description(elem_name)
 
-        elements[k]['voxel_grid'] = voxel_label_base(voxelGrid_temp,
-                                                        min_bound_coord,
-                                                        max_bound_coord)
-        elements[k]['n_pts'] = np.zeros(elements[k]['voxel_grid'].length)
-        for kv in range(elements[k]['voxel_grid'].length):
-            voxel_min_coord, voxel_max_coord = \
-                elements[k]['voxel_grid'].voxel_bounds(index=kv)
-
-            elements[k]['n_pts'][kv] = np.sum(np.all(np.logical_and(
-                pts_temp >= voxel_min_coord, pts_temp <= voxel_max_coord
-                ), axis=1))
-
     return elements, mesh_p
+
+
+def voxelize_BIM(elements, voxel_size, min_bound_coord, max_bound_coord):
+    # Use the element point clouds to generate a voxel grid for each element,
+    # and initialize the total grid using all point clouds.
+    pcd_p = o3d.geometry.PointCloud()
+    element_voxels = []
+    for element in tqdm(elements):
+        # create as-planned point cloud
+        pcd_temp = o3d.geometry.PointCloud()
+        pcd_temp.points = o3d.utility.Vector3dVector(element['point_cloud'])
+        pcd_p += pcd_temp.paint_uniform_color(element['color'])
+
+        # create voxel grid for each element
+        voxelGrid_temp = (
+            o3d.geometry.VoxelGrid.create_from_point_cloud_within_bounds(
+                pcd_temp, voxel_size, min_bound_coord, max_bound_coord
+            )
+        )
+        voxel_base_temp = voxel_label_base(voxelGrid_temp, min_bound_coord, max_bound_coord)
+        element_voxels.append(
+            dict(grid=voxel_base_temp,
+                 weights=np.zeros(voxel_base_temp.length))
+        )
+
+        # Calculate weights to use for assigning element labels
+        for k in range(voxel_base_temp.length):
+            voxel_min_coord, voxel_max_coord = \
+                element_voxels[-1]['grid'].voxel_bounds(index=k)
+
+            element_voxels[-1]['weights'][k] = (
+                np.sum(np.all(
+                    np.logical_and(element['point_cloud'] >= voxel_min_coord,
+                                   element['point_cloud'] <= voxel_max_coord),
+                    axis=1
+                ))
+            )
+
+    voxelGrid_p = o3d.geometry.VoxelGrid.create_from_point_cloud_within_bounds(
+        pcd_p, voxel_size, min_bound_coord, max_bound_coord
+    )
+    print(voxelGrid_p)
+
+    # Convert voxel grid into custom format to save labels
+    voxel_reference = voxel_label_reference(voxelGrid_p,
+                                            min_bound_coord,
+                                            max_bound_coord)
+
+    print "Labelling elements in reference voxel grid."
+    weights_ref = np.zeros([voxel_reference.length,
+                            voxel_reference.elements.shape[1]])
+    k_element = 0
+    for ev in tqdm(element_voxels):
+        # should check that both grids have same origin and size
+        for k in range(ev['grid'].length):
+            grid_index = ev['grid'].grid_index[k, :]
+            # look for equivalent voxel in reference grid
+            # This is an optimal way for using np.where to find the matching
+            # index. More details on how to possibly speed this up are at:
+            # https://stackoverflow.com/questions/7632963/numpy-find-first-index-of-value-fast
+            k_ref = np.where(
+                (voxel_reference.grid_index[:, 0] == grid_index[0]) &
+                (voxel_reference.grid_index[:, 1] == grid_index[1]) &
+                (voxel_reference.grid_index[:, 2] == grid_index[2])
+            )[0]
+
+            more_inside = ev['weights'][k] > weights_ref[k_ref, :]
+            if (more_inside).any():
+                more_index = np.argmax(more_inside)
+
+                weights_ref[k_ref, more_index+1:] = \
+                    weights_ref[k_ref, more_index:-1]
+                weights_ref[k_ref, more_index] = ev['weights'][k]
+
+                voxel_reference.elements[k_ref, more_index+1:] = \
+                    voxel_reference.elements[k_ref, more_index:-1]
+                voxel_reference.elements[k_ref, more_index] = k_element
+
+        k_element += 1
+
+    return voxel_reference
 
 
 # Return the indices of a filled convex hull based on indices provided by
