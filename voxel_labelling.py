@@ -191,8 +191,8 @@ def import_BIM(fn, min_bound_coord, max_bound_coord, point_cloud_density):
 
         # print("Saved %s as point cloud with %G points."
         #       % (elements[k]['name'], n_pts))
-        # pcd_temp = mesh_temp.sample_points_poisson_disk(n_pts)
-        pcd_temp = mesh_temp.sample_points_uniformly(n_pts)
+        pcd_temp = mesh_temp.sample_points_poisson_disk(n_pts)
+        # pcd_temp = mesh_temp.sample_points_uniformly(n_pts)
         pts_temp = np.asarray(pcd_temp.points)
         elements[k]['point_cloud'] = pts_temp
 
@@ -257,14 +257,7 @@ def voxelize_BIM(elements, voxel_size, min_bound_coord, max_bound_coord):
         for k in range(ev['grid'].length):
             grid_index = ev['grid'].grid_index[k, :]
             # look for equivalent voxel in reference grid
-            # This is an optimal way for using np.where to find the matching
-            # index. More details on how to possibly speed this up are at:
-            # https://stackoverflow.com/questions/7632963/numpy-find-first-index-of-value-fast
-            k_ref = np.where(
-                (voxel_reference.grid_index[:, 0] == grid_index[0]) &
-                (voxel_reference.grid_index[:, 1] == grid_index[1]) &
-                (voxel_reference.grid_index[:, 2] == grid_index[2])
-            )[0]
+            k_ref = voxel_reference.grid2index(grid_index)
 
             more_inside = ev['weights'][k] > weights_ref[k_ref, :]
             if (more_inside).any():
@@ -340,6 +333,19 @@ class voxel_label_base:
         local_min = grid_index*self.voxel_size
         local_max = (grid_index + 1)*self.voxel_size
         return local_min + self.origin, local_max + self.origin
+
+    def grid2index(self, grid_index):
+        '''
+        Return index in voxel grid of specified grid_index
+        This is an optimal way for using np.where to find the matching
+        index. More details on how to possibly speed this up are at:
+        https://stackoverflow.com/questions/7632963/numpy-find-first-index-of-value-fast
+        '''
+        return np.where(
+            (self.grid_index[:, 0] == grid_index[0]) &
+            (self.grid_index[:, 1] == grid_index[1]) &
+            (self.grid_index[:, 2] == grid_index[2])
+        )[0]
 
 
 # Voxels with labels of what construction elements they belong to. Intended to
@@ -467,7 +473,9 @@ class voxel_labelled(voxel_label_base):
 
             voxel_distance = np.linalg.norm(pts - image_xyz, axis=1)
 
+            # remove voxels further than some distance from the image
             indices = np.argsort(voxel_distance)
+            indices = indices[voxel_distance[indices] < 2.0]
 
             for index in indices:
                 vertices = ((grid_offset + self.grid_index[index, :])
@@ -538,6 +546,13 @@ class voxel_labelled(voxel_label_base):
         pts_ind = (np.all(pts_all >= self.min_bound, axis=1) &
                    np.all(pts_all <= self.max_bound, axis=1))
         pts = pts_all[pts_ind, :]
+
+        voxelGrid_b = \
+            o3d.geometry.VoxelGrid.create_from_point_cloud_within_bounds(
+                pcd_built, self.voxel_size, self.min_bound, self.max_bound
+            )
+        voxel_base_b = voxel_label_base(voxelGrid_b,
+                                        self.min_bound, self.max_bound)
 
         for index in tqdm(indices):
             voxel_min, voxel_max = self.voxel_bounds(index=index)
