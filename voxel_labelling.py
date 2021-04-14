@@ -555,11 +555,15 @@ class voxel_labelled(voxel_label_base):
                                         self.min_bound, self.max_bound)
 
         for index in tqdm(indices):
-            voxel_min, voxel_max = self.voxel_bounds(index=index)
+            grid_index = self.grid_index[index, :]
+            index_b = voxel_base_b.grid2index(grid_index)
+
+            # voxel_min, voxel_max = self.voxel_bounds(index=index)
 
             # Check if the current voxel has a point
-            if np.any(np.all(pts >= voxel_min, axis=1) &
-                      np.all(pts <= voxel_max, axis=1)):
+            # if np.any(np.all(pts >= voxel_min, axis=1) &
+            #           np.all(pts <= voxel_max, axis=1)):
+            if index_b:
                 self.built[index] = "o"
             else:
                 # generate neighboring grid indices
@@ -570,17 +574,19 @@ class voxel_labelled(voxel_label_base):
                 k = 0
                 while not found_point and k < neighbor_grid.shape[0]:
                     k_neighbor = neighbor_grid[k, :]
+                    k_b = voxel_base_b.grid2index(k_neighbor)
+                    index_taken = self.grid2index(k_neighbor)
 
-                    k_min, k_max = self.voxel_bounds(grid_index=k_neighbor)
-                    index_taken = (self.grid_index ==
-                                   k_neighbor).all(axis=1).any()
+                    # k_min, k_max = self.voxel_bounds(grid_index=k_neighbor)
+                    # index_taken = (self.grid_index ==
+                    #                k_neighbor).all(axis=1).any()
 
                     # If the current neighbor index isn't already in
                     # self.grid_index and contains an as-built point, then
                     # label as occupied
-                    if (not index_taken and
-                            np.any(np.all(pts >= k_min, axis=1) &
-                                   np.all(pts <= k_max, axis=1))):
+                    if (not index_taken and k_b):
+                        #     np.any(np.all(pts >= k_min, axis=1) &
+                        #            np.all(pts <= k_max, axis=1))):
                         self.built[index] = "o"
                         found_point = True
 
@@ -594,6 +600,8 @@ class voxel_labelled(voxel_label_base):
         expected_elements = np.unique(self.elements)
 
         present_elements = []
+        element_probabilities = np.zeros(expected_elements.shape[0])
+        k = 0
         for element in expected_elements:
             # this isn't working?
             index = (self.elements == element) & (self.built != "b")
@@ -609,10 +617,13 @@ class voxel_labelled(voxel_label_base):
                 P_progress = n_occupied/float(n_occupied + n_empty)
                 print "Element %G progress has probability %f" % (element,
                                                                   P_progress)
+            
+            element_probabilities[k] = P_progress
+            k += 1
             if P_progress > t_predict:
                 present_elements.append(element)
 
-        return present_elements
+        return present_elements, element_probabilities
 
     def visualize(self, label_to_plot, label_colors=None, plot_geometry=[]):
         pts = self.grid_index*self.voxel_size + self.origin
