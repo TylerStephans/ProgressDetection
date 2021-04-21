@@ -4,6 +4,8 @@ import numpy as np
 from scipy.spatial import ConvexHull, Delaunay
 from tqdm import tqdm   # adds loading bars!
 import copy
+import pandas as pd
+import re
 
 # import pickle
 
@@ -85,8 +87,10 @@ def import_cameras_file(fn):
         return cameras
 
 
-# Import an images.txt file from COLMAP and save a list of images
 def import_images_file(fn):
+    '''
+    Import an images.txt file from COLMAP and save a list of images
+    '''
     with open(fn) as f_obj:
         lines_obj = f_obj.readlines()
 
@@ -111,6 +115,34 @@ def import_images_file(fn):
         images[k/2].calc_rotation_matrix()
 
     return images
+
+
+def import_LinearPlan(fn, elements):
+    '''
+    Import linear plan for .csv file
+    The returned linearPlan is a list of steps, where each step is a list of
+    element indices corresponding to the elements input.
+    '''
+    # regular expression to find element ID in element name
+    elementIdExpression = r"\[\d{6}\]"
+
+    planIn = pd.read_csv(fn)
+
+    nSteps = planIn['Step'].max()
+
+    linearPlan = [[] for k in range(nSteps)]
+
+    # Loop through each row in plan, find the corresponding element, and
+    # record its index in elements.
+    for kr in tqdm(range(planIn.shape[0])):
+        k_step = planIn.loc[kr, 'Step'] - 1
+        for ke in range(len(elements)):
+            match = re.search(elementIdExpression, elements[ke]['name'])
+            eID = int(match.group()[1:-1])
+            if planIn.loc[kr, 'Block Number'] == eID:
+                linearPlan[k_step].append(ke)
+
+    return linearPlan
 
 
 def import_BIM(fn, min_bound_coord, max_bound_coord, point_cloud_density):
@@ -323,6 +355,9 @@ class voxel_label_base:
         # boundaries used when creating the original VoxelGrid
         self.min_bound = min_bound
         self.max_bound = max_bound
+        # list of lists where for each voxel, the pixel coordinates of its
+        # projection onto an image are stored for a list of images
+        self.projections = [[] for k in range(n_voxels)]
 
     # Given an open3d voxel, determine the voxels bounding box based on the
     # grid origin, the voxel size, and voxel's grid index
@@ -389,6 +424,69 @@ class voxel_label_reference(voxel_label_base):
                     self.elements[k, more_index] = k_element
                 k_element = k_element + 1
 
+    def project_voxels(self, camera, images):
+        # threshold for maximum distance to consider a voxel visible
+        threshold = 3.0
+        # Easy access to creating voxel vertices
+        grid_offset = np.array([[0, 0, 0],
+                                [0, 0, 1],
+                                [0, 1, 0],
+                                [0, 1, 1],
+                                [1, 0, 0],
+                                [1, 0, 1],
+                                [1, 1, 0],
+                                [1, 1, 1]])
+
+        print("Projecting all voxels onto images...")
+        for index in tqdm(range(self.grid_index.shape[0])):
+            for image in images:
+                # determine if voxel is too far away
+                voxel_center = self.grid_index[index, :]*self.voxel_size + \
+                    self.voxel_size/2.0 + self.origin
+                image_xyz = image.dcm.T.dot(-image.translation)
+                voxel_distance = np.linalg.norm(voxel_center - image_xyz)
+                too_far = voxel_distance > threshold
+
+                vertices = ((grid_offset + self.grid_index[index, :])
+                            * self.voxel_size + self.origin)
+
+                X = np.concatenate((vertices, np.ones([vertices.shape[0], 1])),
+                                   axis=1)
+                M_ex = np.concatenate((image.dcm,
+                                       image.translation[:, np.newaxis]),
+                                      axis=1)
+                # voxel vertex coordinates in camera frame
+                vertices_c = M_ex.dot(X.T).T
+
+                # vertices onto image plane and return the pixel indices [y, x]
+                pixels = np.floor(camera.project_pt2image(vertices,
+                                                          image)).astype('int')
+
+                # which pixels fall within the image frame
+                inside_image = (np.all(pixels >= 0, axis=1) &
+                                np.all(pixels < np.flip(camera.size), axis=1))
+
+                # If at least one vertex of the voxel falls within the image
+                # bounds and is infront of the camera, project it onto the
+                # marking_board.
+                in_view = ((vertices_c[:, 2] > 0).any() and
+                           np.sum(inside_image) >= 1)
+                if in_view and not too_far:
+                    # indices of projection
+                    ind_tmp = convex_fill(pixels)
+
+                    if np.all(inside_image):
+                        ind_pj = ind_tmp
+                    else:  # remove indices outside bounds
+                        ind_in = (np.all(ind_tmp >= 0, axis=1) &
+                                  np.all(ind_tmp < np.flip(camera.size),
+                                  axis=1))
+                        ind_pj = ind_tmp[ind_in, :]
+
+                    self.projections[index].append(ind_pj)
+                else:
+                    self.projections[index].append(np.NaN)
+
     # Return a voxel_labelled class which only contains voxels labelled with
     # the desired_elements.
     def export_voxel_labelled(self, desired_elements):
@@ -415,7 +513,8 @@ class voxel_label_reference(voxel_label_base):
             voxel_labelled(self.grid_index[index_i, :],
                            self.elements[index_i, index_j],
                            self.voxel_size, self.origin, n_voxels,
-                           self.min_bound, self.max_bound)
+                           self.min_bound, self.max_bound,
+                           [self.projections[i] for i in index_i])
 
         return voxel_labels
 
@@ -425,7 +524,7 @@ class voxel_label_reference(voxel_label_base):
 # NOTE: Should only be created by using export_voxel_labilled.
 class voxel_labelled(voxel_label_base):
     def __init__(self, grid_index, elements, voxel_size, origin, length,
-                 min_bound, max_bound):
+                 min_bound, max_bound, projections):
         self.grid_index = grid_index
         self.elements = elements
         self.voxel_size = voxel_size
@@ -433,6 +532,7 @@ class voxel_labelled(voxel_label_base):
         self.length = length
         self.min_bound = min_bound
         self.max_bound = max_bound
+        self.projections = projections
 
         # NOTE: Labels for planned and built can be 'e', 'o', or 'b'
         # (empty, occupied, blocked)
@@ -453,67 +553,23 @@ class voxel_labelled(voxel_label_base):
         # for a voxel to be considered observed by an image
         threshold = 20
 
-        # Easy access to creating voxel vertices
-        grid_offset = np.array([[0, 0, 0],
-                                [0, 0, 1],
-                                [0, 1, 0],
-                                [0, 1, 1],
-                                [1, 0, 0],
-                                [1, 0, 1],
-                                [1, 1, 0],
-                                [1, 1, 1]])
-
+        # center point of every voxel
         pts = self.grid_index*self.voxel_size + \
             self.voxel_size/2.0 + self.origin
 
         pbar = tqdm(images)
+        k_image = 0
         for image in pbar:
             marking_board = np.zeros(np.flip(camera.size), dtype='u1')
+
+            # Loop through voxels in order of distance from the image
             image_xyz = image.dcm.T.dot(-image.translation)
-
             voxel_distance = np.linalg.norm(pts - image_xyz, axis=1)
-
-            # remove voxels further than some distance from the image
             indices = np.argsort(voxel_distance)
-            indices = indices[voxel_distance[indices] < 2.0]
 
             for index in indices:
-                vertices = ((grid_offset + self.grid_index[index, :])
-                            * self.voxel_size + self.origin)
-
-                X = np.concatenate((vertices, np.ones([vertices.shape[0], 1])),
-                                   axis=1)
-                M_ex = np.concatenate((image.dcm,
-                                       image.translation[:, np.newaxis]),
-                                      axis=1)
-                # voxel vertex coordinates in camera frame
-                vertices_c = M_ex.dot(X.T).T
-
-                # vertices onto image plane and return the pixel indices [y, x]
-                pixels = np.floor(camera.project_pt2image(vertices,
-                                                          image)).astype('int')
-
-                # which pixels fall within the image frame
-                inside_image = (np.all(pixels >= 0, axis=1) &
-                                np.all(pixels < np.flip(camera.size), axis=1))
-
-                # If at least one vertex of the voxel falls within the image
-                # bounds and is infront of the camera, project it onto the
-                # marking_board.
-                in_view = ((vertices_c[:, 2] > 0).any() and
-                           np.sum(inside_image) >= 1)
-                if in_view:
-                    # indices of projection
-                    ind_tmp = convex_fill(pixels)
-
-                    if np.all(inside_image):
-                        ind_pj = ind_tmp
-                    else:  # remove indices outside bounds
-                        ind_in = (np.all(ind_tmp >= 0, axis=1) &
-                                  np.all(ind_tmp < np.flip(camera.size),
-                                  axis=1))
-                        ind_pj = ind_tmp[ind_in, :]
-
+                ind_pj = self.projections[index][k_image]
+                if ~np.any(np.isnan(ind_pj)):
                     n_occluded = (np.sum(
                                   marking_board[ind_pj[:, 0], ind_pj[:, 1]]))
                     n_observed = ind_pj.shape[0] - n_occluded
@@ -523,9 +579,8 @@ class voxel_labelled(voxel_label_base):
                     # must have already been seen.
                     elif self.planned[index] != "o":
                         self.planned[index] = "b"
-
                     marking_board[ind_pj[:, 0], ind_pj[:, 1]] = 1
-
+            k_image = k_image + 1
             pbar.set_description("Looking at %s" % image.name)
             # plt.imshow(marking_board)
             # plt.show()
@@ -612,7 +667,7 @@ class voxel_labelled(voxel_label_base):
             # Do not calculate probability if element is completely blocked
             if n_occupied == 0 and n_empty == 0:
                 P_progress = np.nan
-                print "Element %G is blocked from view." % (element)
+                # print "Element %G is blocked from view." % (element)
             else:
                 P_progress = n_occupied/float(n_occupied + n_empty)
                 print "Element %G progress has probability %f" % (element,
