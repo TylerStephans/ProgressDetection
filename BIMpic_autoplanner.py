@@ -1,5 +1,8 @@
 import open3d.open3d as o3d
 import numpy as np
+import matplotlib.pyplot as plt
+import matplotlib
+import seaborn as sns
 import pickle
 import os
 import errno
@@ -9,13 +12,14 @@ import voxel_labelling as vl
 np.random.seed(0)
 
 # Inputs
-pn = r"./corner_n_CMU_10/"  # directory for instructions
-fn_instructions = r"corner_n_CMU_stest.txt"
-fn_setup = r"./autoplanner_setups/corner_n_CMU_total_setup.pkl"
-fn_asBuilt = r"/home/tbs5111/IRoCS_BIM2Robot/SfM/corner_n_CMU_s6_10/dense/fused.ply"
-fn_asPlanned = r"/home/tbs5111/IRoCS_BIM2Robot/Meshes/corner_n_CMU_total.obj"
-fn_cameras = r"/home/tbs5111/IRoCS_BIM2Robot/SfM/corner_n_CMU_s6_10/sparse/manual/cameras.txt"
-fn_images = r"/home/tbs5111/IRoCS_BIM2Robot/SfM/corner_n_CMU_s6_10/sparse/manual/images.txt"
+pn = r"./foundation_test/"  # directory for instructions
+fn_instructions = r"testing.txt"
+fn_setup = r"./autoplanner_setups/foundation_1inVoxel_setup.pkl"
+fn_asBuilt = r"/home/tbs5111/IRoCS_BIM2Robot/SfM/foundation_01_courses_s04/dense/fused.ply"
+fn_asPlanned = r"/home/tbs5111/IRoCS_BIM2Robot/Meshes/foundation.obj"
+fn_cameras = r"/home/tbs5111/IRoCS_BIM2Robot/SfM/foundation_01_courses_s04/sparse/manual/cameras.txt"
+fn_images = r"/home/tbs5111/IRoCS_BIM2Robot/SfM/foundation_01_courses_s04/sparse/manual/images.txt"
+fn_plan = r"/home/tbs5111/IRoCS_BIM2Robot/ProgressPredict/linear_plans/foundation_01_courses.csv"
 
 # Order that elements are supposed to be placed. Each item is a step, and each
 # step must consist of a list of element indices.
@@ -29,14 +33,14 @@ fn_images = r"/home/tbs5111/IRoCS_BIM2Robot/SfM/corner_n_CMU_s6_10/sparse/manual
 #              15, 16, 17, 18, 19]
 # BIM_order = [[k] for k in BIM_order]
 
-BIM_order = [[0, 1, 2],
-             [5, 6, 7],
-             [8, 9, 10],
-             [11, 12, 3, 13, 4],
-             [14, 20, 21],
-             [22, 23, 24],
-             [25, 15, 16],
-             [17, 18, 19]]
+# # BIM_order = [[0, 1, 2],
+# #              [5, 6, 7],
+# #              [8, 9, 10],
+# #              [11, 12, 3, 13, 4],
+# #              [14, 20, 21],
+# #              [22, 23, 24],
+# #              [25, 15, 16],
+# #              [17, 18, 19]]
 
 # Each item in materials is a material. For each material, an element is said
 # to be that material if material[0] is in its name.
@@ -46,14 +50,18 @@ materials = [["Standard_Brick", "standard_brick"],
 # After importing/generating the BIM and other files
 continue_after_import = True
 
-voxel_size = 0.01  # width of voxel in meters
-point_cloud_density = 50000  # number of points / surface area
+plot_heatmap = True
+
+voxel_size = 0.0254  # width of voxel in meters
+point_cloud_density = 10/voxel_size**2  # number of points / surface area
 
 # bounding box coordinates with about 2 cm tolerance
-min_bound_coord = np.array([2.88, 7.64, -0.02])
-# min_bound_coord = np.array([7, 7.55, 0.0])
-max_bound_coord = np.array([7.95, 12.4, 1.0])
-# max_bound_coord = np.array([8.0, 8.5, 0.4])
+# construction area bounds
+# # min_bound_coord = np.array([2.88, 7.64, -0.02])
+# # max_bound_coord = np.array([7.95, 12.4, 1.0])
+# foundation bounds
+min_bound_coord = np.array([2.88, 7.38, -0.02])
+max_bound_coord = np.array([8.12, 12.58, 1.0])
 
 print "Starting import... \n"
 # import as-built and as-planned models
@@ -83,37 +91,26 @@ except IOError:
     elements, mesh_p = vl.import_BIM(fn_asPlanned, min_bound_coord,
                                      max_bound_coord, point_cloud_density)
 
-    # Create voxel grid from element point clouds
-    pcd_p = o3d.geometry.PointCloud()
-    for element in elements:
-        pcd_temp = o3d.geometry.PointCloud()
-        pcd_temp.points = o3d.utility.Vector3dVector(element['point_cloud'])
-        pcd_p += pcd_temp.paint_uniform_color(element['color'])
-
-    voxelGrid_p = o3d.geometry.VoxelGrid.create_from_point_cloud_within_bounds(
-        pcd_p, voxel_size, min_bound_coord, max_bound_coord
-    )
-    print(voxelGrid_p)
-
-    # Convert voxel grid into custom format to save labels
-    voxel_reference = vl.voxel_label_reference(voxelGrid_p,
-                                               min_bound_coord,
-                                               max_bound_coord)
-
-    # o3d.visualization.draw_geometries([voxelGrid_p, pcd_b])
-
-    print "Labelling elements in reference voxel grid."
-    voxel_reference.create_element_labels(elements)
+    print "Voxelizing BIM"
+    voxel_reference = vl.voxelize_BIM(elements, voxel_size, min_bound_coord, max_bound_coord)
 
     print "Saving autoplanner setup file"
     dump = [point_cloud_density, elements, voxel_reference]
     with open(fn_setup, 'w') as f_setup:
         pickle.dump(dump, f_setup)
 
+print "Importing linear plan"
+BIM_order = vl.import_LinearPlan(fn_plan, elements)
+
 
 if continue_after_import:
     print "Starting searching for current step...\n"
     found_all_elements = False
+
+    # # prediction_board = np.empty([len(elements), len(BIM_order)])
+    # # prediction_board[:] = np.NaN
+    cmap = matplotlib.colors.LinearSegmentedColormap.from_list("", ["red", "yellow", "green"])
+
     step = len(BIM_order)
     # Starting with the last step, loop backwards through the steps until
     # you've found a step where you observe every element you expect to. The
@@ -121,16 +118,10 @@ if continue_after_import:
     while not found_all_elements and step > 0:
         cur_elements = [k_elem for k_elems in BIM_order[:step]
                         for k_elem in k_elems]
+        k_elements = BIM_order[step-1]
         print "\n=========== Step %G ===========\n" % (step)
         print "Creating labelled voxel"
         voxel_labelled = voxel_reference.export_voxel_labelled(cur_elements)
-
-        # print "Plotting labelled voxel"
-        # voxel_labelled.visualize(
-        #     "elements",
-        #     np.array([elements[k]['color'] for k in range(len(elements))]),
-        #     plot_geometry=[pcd_b]
-        # )
 
         print "Labeling blocked voxels in as-planned model."
         voxel_labelled.create_planned_labels(cameras, images)
@@ -145,27 +136,40 @@ if continue_after_import:
         voxel_labelled.create_built_labels(pcd_b)
 
         print "Predicting what elements are present in the as-built model."
-        found_elements = voxel_labelled.predict_progress()
+        found_elements, element_Ps = voxel_labelled.predict_progress()
 
-        # voxel_labelled.visualize(
-        #     "elements",
-        #     np.array([elements[k]['color'] for k in range(len(elements))]))
+        # # elem_order = np.unique(voxel_labelled.elements)
+        # # prediction_board[elem_order, step-1] = element_Ps
 
-        # voxel_labelled.visualize("planned")
+        # # voxel_labelled.visualize(
+        # #     "elements",
+        # #     np.array([elements[k]['color'] for k in range(len(elements))]))
 
-        # voxel_labelled.visualize("built", plot_geometry=[pcd_b])
+        # # voxel_labelled.visualize("planned")
 
-        found_sorted = np.sort(found_elements)
-        expected_sorted = np.sort(expected_elements)
+        # # voxel_labelled.visualize("built", plot_geometry=[pcd_b])
+
+        # # # found_sorted = np.sort(found_elements)
+        # # # expected_sorted = np.sort(expected_elements)
 
         # Making this comparison only tells me that I found everything I was
         # looking for. It doesn't tell me what I missed...
-        expected_found = found_sorted == expected_sorted
+        # # # expected_found = found_sorted == expected_sorted
 
         # Found a step with all elements present, so the current step must
         # have been the last one checked!
-        found_all_elements = np.all(expected_found)
+        # # # found_all_elements = np.all(expected_found)
+        if not np.all(np.isin(k_elements, expected_elements)):
+            print "WARNING: Some expected elements are blocked..."
+            # I think I should place a continue here?
+        # Found a step where all elements for the kth step were found, so the
+        # current step must have been the last one checked!
+        found_all_elements = np.all(np.isin(k_elements, found_elements))
         step -= 1
+
+    # # plt.imshow(prediction_board, cmap=cmap, interpolation='nearest')
+    # # ax = sns.heatmap(prediction_board)
+    # # plt.show()
 
     cur_step = step + 2
 
