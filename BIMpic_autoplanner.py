@@ -14,38 +14,23 @@ np.random.seed(0)
 # Inputs
 pn = r"./foundation_test/"  # directory for instructions
 fn_instructions = r"testing.txt"
-fn_setup = r"./autoplanner_setups/foundation_1inVoxel_setup.pkl"
-fn_asBuilt = r"/home/tbs5111/IRoCS_BIM2Robot/SfM/foundation_01_courses_s04/dense/fused.ply"
-fn_asPlanned = r"/home/tbs5111/IRoCS_BIM2Robot/Meshes/foundation.obj"
-fn_cameras = r"/home/tbs5111/IRoCS_BIM2Robot/SfM/foundation_01_courses_s04/sparse/manual/cameras.txt"
-fn_images = r"/home/tbs5111/IRoCS_BIM2Robot/SfM/foundation_01_courses_s04/sparse/manual/images.txt"
+fn_setup = r"./autoplanner_setups/foundation_1inVoxel_setup_test.pkl"
+fn_asPlanned = r"/home/tbs5111/IRoCS_BIM2Robot/Meshes/foundation.obj"  # path for as-planned model
 fn_plan = r"/home/tbs5111/IRoCS_BIM2Robot/ProgressPredict/linear_plans/foundation_01_courses.csv"
+asBuilt_name = "foundation_01_courses_s04"
 
-# Order that elements are supposed to be placed. Each item is a step, and each
-# step must consist of a list of element indices.
-# Brick corner only
-# BIM_order = [0, 1, 2, 5, 6, 7, 8, 9, 10, 11, 12,
-#              3, 13, 4, 14, 15, 16, 17, 18, 19]
-# Build first 3 levels of brick, then CMU, then finish brick
-# Each piece is a step
-# BIM_order = [0, 1, 2, 5, 6, 7, 8, 9, 10, 11, 12, 3, 13, 4, 14,
-#              20, 21, 22, 23, 24, 25,
-#              15, 16, 17, 18, 19]
-# BIM_order = [[k] for k in BIM_order]
-
-# # BIM_order = [[0, 1, 2],
-# #              [5, 6, 7],
-# #              [8, 9, 10],
-# #              [11, 12, 3, 13, 4],
-# #              [14, 20, 21],
-# #              [22, 23, 24],
-# #              [25, 15, 16],
-# #              [17, 18, 19]]
-
-# Each item in materials is a material. For each material, an element is said
-# to be that material if material[0] is in its name.
-materials = [["Standard_Brick", "standard_brick"],
-             ["CMU", "cmu"]]
+fn_asBuilt = (
+    r"/home/tbs5111/IRoCS_BIM2Robot/SfM/" +
+    asBuilt_name + r"/dense/fused.ply"
+)
+fn_cameras = (
+    r"/home/tbs5111/IRoCS_BIM2Robot/SfM/" +
+    asBuilt_name + r"/sparse/manual/cameras.txt"
+)
+fn_images = (
+    r"/home/tbs5111/IRoCS_BIM2Robot/SfM/" +
+    asBuilt_name + r"/sparse/manual/images.txt"
+)
 
 # After importing/generating the BIM and other files
 continue_after_import = True
@@ -54,6 +39,11 @@ plot_heatmap = True
 
 voxel_size = 0.0254  # width of voxel in meters
 point_cloud_density = 10/voxel_size**2  # number of points / surface area
+
+# Each item in materials is a material. For each material, an element is said
+# to be that material if material[0] is in its name.
+materials = [["Standard_Brick", "standard_brick"],
+             ["CMU", "cmu"]]
 
 # bounding box coordinates with about 2 cm tolerance
 # construction area bounds
@@ -107,17 +97,25 @@ if continue_after_import:
     print "Starting searching for current step...\n"
     found_all_elements = False
 
-    # # prediction_board = np.empty([len(elements), len(BIM_order)])
-    # # prediction_board[:] = np.NaN
     cmap = matplotlib.colors.LinearSegmentedColormap.from_list("", ["red", "yellow", "green"])
+
+    voxel_reference.project_voxels(cameras, images)
+
+    # Array where each column represents a step, and each row a construction
+    # element. The values are the probability of that element having
+    # progressed on that step.
+    prediction_board = np.empty([len(elements), len(BIM_order)])
+    prediction_board[:] = np.NaN
 
     step = len(BIM_order)
     # Starting with the last step, loop backwards through the steps until
     # you've found a step where you observe every element you expect to. The
     # following step must then be the current step.
     while not found_all_elements and step > 0:
+        # All elements that exist for current step
         cur_elements = [k_elem for k_elems in BIM_order[:step]
                         for k_elem in k_elems]
+        # Elements that should have been placed during current step
         k_elements = BIM_order[step-1]
         print "\n=========== Step %G ===========\n" % (step)
         print "Creating labelled voxel"
@@ -126,20 +124,26 @@ if continue_after_import:
         print "Labeling blocked voxels in as-planned model."
         voxel_labelled.create_planned_labels(cameras, images)
 
-        # Expect to observe any element with at least one voxel not labelled
-        # as blocked. This relies on there being enough cameras to reconstruct
-        # every element visible from the images.
-        expected_elements = np.unique(
-            voxel_labelled.elements[voxel_labelled.planned != "b"])
-
         print "Labeling occupied voxels in as-built model."
         voxel_labelled.create_built_labels(pcd_b)
 
         print "Predicting what elements are present in the as-built model."
         found_elements, element_Ps = voxel_labelled.predict_progress()
 
-        # # elem_order = np.unique(voxel_labelled.elements)
-        # # prediction_board[elem_order, step-1] = element_Ps
+        # Report if any of the elements placed in current step are completely
+        # blocked.
+        visible_elements = np.unique(
+            voxel_labelled.elements[voxel_labelled.planned != "b"])
+        if not np.all(np.isin(k_elements, visible_elements)):
+            print "WARNING: Some expected elements are blocked..."
+
+        # Determine indices that will sort element probabilities to be in the
+        # same order as prescribed in BIM_order
+        cur_elements_unordered = np.unique(voxel_labelled.elements)
+        index_reorder = np.argsort(np.argsort(cur_elements))
+        index_sort = np.argsort(cur_elements_unordered)
+
+        prediction_board[:len(cur_elements), step-1] = element_Ps[index_sort][index_reorder]
 
         # # voxel_labelled.visualize(
         # #     "elements",
@@ -149,27 +153,17 @@ if continue_after_import:
 
         # # voxel_labelled.visualize("built", plot_geometry=[pcd_b])
 
-        # # # found_sorted = np.sort(found_elements)
-        # # # expected_sorted = np.sort(expected_elements)
-
-        # Making this comparison only tells me that I found everything I was
-        # looking for. It doesn't tell me what I missed...
-        # # # expected_found = found_sorted == expected_sorted
-
-        # Found a step with all elements present, so the current step must
-        # have been the last one checked!
-        # # # found_all_elements = np.all(expected_found)
-        if not np.all(np.isin(k_elements, expected_elements)):
-            print "WARNING: Some expected elements are blocked..."
-            # I think I should place a continue here?
         # Found a step where all elements for the kth step were found, so the
         # current step must have been the last one checked!
-        found_all_elements = np.all(np.isin(k_elements, found_elements))
+        # found_all_elements = np.all(np.isin(k_elements, found_elements))
         step -= 1
 
     # # plt.imshow(prediction_board, cmap=cmap, interpolation='nearest')
-    # # ax = sns.heatmap(prediction_board)
-    # # plt.show()
+    # index of last visible element in prediction board
+    ind_last = np.where(~np.all(np.isnan(prediction_board), axis=1))[0][-1]
+    ax = sns.heatmap(prediction_board, cmap=cmap)
+    plt.ylim([ind_last + 1, 0])
+    plt.show()
 
     cur_step = step + 2
 
