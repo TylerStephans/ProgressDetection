@@ -3,6 +3,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib
 import seaborn as sns
+import pandas as pd
 import pickle
 import os
 import errno
@@ -17,7 +18,7 @@ fn_instructions = r"testing.txt"
 fn_setup = r"./autoplanner_setups/foundation_1inVoxel_setup_test.pkl"
 fn_asPlanned = r"/home/tbs5111/IRoCS_BIM2Robot/Meshes/foundation.obj"  # path for as-planned model
 fn_plan = r"/home/tbs5111/IRoCS_BIM2Robot/ProgressPredict/linear_plans/foundation_01_courses.csv"
-asBuilt_name = "foundation_01_courses_s04"
+asBuilt_name = "foundation_01_courses_s53"
 
 fn_asBuilt = (
     r"/home/tbs5111/IRoCS_BIM2Robot/SfM/" +
@@ -32,18 +33,16 @@ fn_images = (
     asBuilt_name + r"/sparse/manual/images.txt"
 )
 
-# After importing/generating the BIM and other files
-continue_after_import = True
-
-plot_heatmap = True
+# If true, then only import BIM and model data, and save to file
+only_import = False
+# Loop through every step in plan to populate prediction board for heatmap
+plot_heatmap = False
+# Save prediction board to csv file
+save_prediction_board = False
 
 voxel_size = 0.0254  # width of voxel in meters
 point_cloud_density = 10/voxel_size**2  # number of points / surface area
 
-# Each item in materials is a material. For each material, an element is said
-# to be that material if material[0] is in its name.
-materials = [["Standard_Brick", "standard_brick"],
-             ["CMU", "cmu"]]
 
 # bounding box coordinates with about 2 cm tolerance
 # construction area bounds
@@ -89,16 +88,21 @@ except IOError:
     with open(fn_setup, 'w') as f_setup:
         pickle.dump(dump, f_setup)
 
-print "Importing linear plan"
-BIM_order = vl.import_LinearPlan(fn_plan, elements)
-
-
-if continue_after_import:
+if not only_import:
     print "Starting searching for current step...\n"
-    found_all_elements = False
+    check_next_step = True
+    found_k_elements = False
+    cur_step = np.NaN
 
-    cmap = matplotlib.colors.LinearSegmentedColormap.from_list("", ["red", "yellow", "green"])
+    # Color map based on excel conditional formatting
+    mymap = np.array([[248, 105, 107], [255, 235, 132], [99, 190, 123]])
+    mymap = mymap/255.0
+    cmap = matplotlib.colors.LinearSegmentedColormap.from_list("", mymap)
 
+    print "Importing linear plan"
+    BIM_order = vl.import_LinearPlan(fn_plan, elements)
+
+    print("Projecting all voxels onto images...")
     voxel_reference.project_voxels(cameras, images)
 
     # Array where each column represents a step, and each row a construction
@@ -111,7 +115,7 @@ if continue_after_import:
     # Starting with the last step, loop backwards through the steps until
     # you've found a step where you observe every element you expect to. The
     # following step must then be the current step.
-    while not found_all_elements and step > 0:
+    while check_next_step and step > 0:
         # All elements that exist for current step
         cur_elements = [k_elem for k_elems in BIM_order[:step]
                         for k_elem in k_elems]
@@ -128,7 +132,7 @@ if continue_after_import:
         voxel_labelled.create_built_labels(pcd_b)
 
         print "Predicting what elements are present in the as-built model."
-        found_elements, element_Ps = voxel_labelled.predict_progress()
+        elements_found, element_Ps = voxel_labelled.predict_progress()
 
         # Report if any of the elements placed in current step are completely
         # blocked.
@@ -155,38 +159,78 @@ if continue_after_import:
 
         # Found a step where all elements for the kth step were found, so the
         # current step must have been the last one checked!
-        # found_all_elements = np.all(np.isin(k_elements, found_elements))
+        found_k_elements = np.all(np.isin(k_elements, elements_found))
+        if found_k_elements and np.isnan(cur_step):
+            cur_step = step + 1
+            # # voxel_labelled.visualize("built", plot_geometry=[pcd_b])
+
+            print "Construction elements found:"
+            found_names = [elements[k]['name'] for k in elements_found]
+            for name in found_names:
+                print name
+
+            print "******** Current step is step %G ********" % (cur_step)
+
+            if not plot_heatmap:
+                check_next_step = False
+
         step -= 1
 
-    # # plt.imshow(prediction_board, cmap=cmap, interpolation='nearest')
-    # index of last visible element in prediction board
-    ind_last = np.where(~np.all(np.isnan(prediction_board), axis=1))[0][-1]
-    ax = sns.heatmap(prediction_board, cmap=cmap)
-    plt.ylim([ind_last + 1, 0])
-    plt.show()
+    if plot_heatmap:
+        # index of last visible element in prediction board
+        ind_first = np.where(~np.all(np.isnan(prediction_board), axis=1))[0][0]
+        ind_last = np.where(~np.all(np.isnan(prediction_board), axis=1))[0][-1]
+        # generate heatmap of element progress probabilities
+        ax = sns.heatmap(prediction_board, cmap=cmap,
+                         cbar_kws={'label': 'Progress Probability'})
+        # add vertical lines for different steps
+        ax.vlines(range(1, prediction_board.shape[1]), *ax.get_ylim(),
+                  colors=[0.7]*3, linewidths=0.5)
+        # label ticks by step, not array index
+        ax.xaxis.set_major_formatter(
+            matplotlib.ticker.IndexFormatter(
+                range(prediction_board.shape[1]+1))
+        )
+        plt.ylim([ind_last + 1, ind_first])
+        plt.xlabel("Step")
+        plt.ylabel("Construction Element")
+        plt.title("Prediction Heatmap for Step " + str(cur_step-1))
+        plt.savefig(asBuilt_name + "_heatmap.png")
+        plt.show()
 
-    cur_step = step + 2
+    if save_prediction_board:
+        # ordered list of element indices based on BIM_order
+        ordered_elements = [k_elem for k_elems in BIM_order
+                            for k_elem in k_elems]
+        # ordered list of steps correlating to ordered_elements
+        ordered_steps = [k_step + 1 for k_step in range(len(BIM_order))
+                         for k_elem in BIM_order[k_step]]
 
-    print "Construction elements found:"
-    found_names = [elements[k]['name'] for k in found_elements]
-    for name in found_names:
-        print name
+        # create data frame of element ID, material, and step for each element
+        element_properties = (
+            [[elements[k]['ID'], elements[k]['material']]
+             for k in ordered_elements]
+        )
+        for k in range(len(element_properties)):
+            element_properties[k].append(ordered_steps[k])
+        df_properties = pd.DataFrame(data=element_properties,
+                                     columns=['element ID', 'material',
+                                              'step'])
 
-    print "Current step is step %G." % (cur_step)
-    # Missing elements is currently broken...
-    # expected_names = [elements[k]['name'] for k in missing_elements]
-    # for name in expected_names:
-    #     print name
-
-    voxel_labelled.visualize("built", plot_geometry=[pcd_b])
+        # create data frame based on prediction board
+        step_headers = ['s' + str(k)
+                        for k in range(1, prediction_board.shape[1]+1)]
+        df_probabilities = pd.DataFrame(data=prediction_board,
+                                        columns=step_headers)
+        # combine data frames and export to csv
+        df = pd.concat([df_properties, df_probabilities], axis=1)
+        df.to_csv(pn + r"/" + asBuilt_name + ".csv", index=False)
 
     print "Writing instructions for material placement."
     # Instructions for the robot with one list item for each object to place
     instructions = []
     for k in BIM_order[cur_step - 1]:
-        cur_material = [material[1] for material in materials
-                        if material[0] in elements[k]['name']]
-        instructions.append(cur_material[0])
+        instructions.append(elements[k]['material'])
 
     with open(pn + fn_instructions, "w") as f:
         for instruction in instructions:
