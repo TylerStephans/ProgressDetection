@@ -123,9 +123,6 @@ def import_LinearPlan(fn, elements):
     The returned linearPlan is a list of steps, where each step is a list of
     element indices corresponding to the elements input.
     '''
-    # regular expression to find element ID in element name
-    elementIdExpression = r"\[\d{6}\]"
-
     planIn = pd.read_csv(fn)
 
     nSteps = planIn['Step'].max()
@@ -137,15 +134,21 @@ def import_LinearPlan(fn, elements):
     for kr in tqdm(range(planIn.shape[0])):
         k_step = planIn.loc[kr, 'Step'] - 1
         for ke in range(len(elements)):
-            match = re.search(elementIdExpression, elements[ke]['name'])
-            eID = int(match.group()[1:-1])
-            if planIn.loc[kr, 'Block Number'] == eID:
+            if planIn.loc[kr, 'Block Number'] == elements[ke]['ID']:
                 linearPlan[k_step].append(ke)
 
     return linearPlan
 
 
 def import_BIM(fn, min_bound_coord, max_bound_coord, point_cloud_density):
+    # regular expression to find element ID in element name
+    elementIdExpression = r"\[\d{6}\]"
+
+    # Each item in materials is a material. For each material, an element is said
+    # to be that material if material[0] is in its name.
+    materials = [["Standard_Brick", "standard_brick"],
+                 ["CMU", "cmu"]]
+
     mesh_p = o3d.io.read_triangle_mesh(fn)
     print(mesh_p)
 
@@ -227,6 +230,18 @@ def import_BIM(fn, min_bound_coord, max_bound_coord, point_cloud_density):
         # pcd_temp = mesh_temp.sample_points_uniformly(n_pts)
         pts_temp = np.asarray(pcd_temp.points)
         elements[k]['point_cloud'] = pts_temp
+
+        # Find element ID in element name
+        match = re.search(elementIdExpression,
+                          elements[k]['name'])
+        elements[k]['ID'] = int(match.group()[1:-1])
+        # Find element material in element name
+        cur_material = [material[1] for material in materials
+                        if material[0] in elements[k]['name']]
+        if not cur_material:
+            print("Warning: no material found in " + elements[k])
+        else:
+            elements[k]['material'] = cur_material[0]
 
         elem_name = elements[k]['name'][0:40]
         pbar.set_description(elem_name)
@@ -437,7 +452,6 @@ class voxel_label_reference(voxel_label_base):
                                 [1, 1, 0],
                                 [1, 1, 1]])
 
-        print("Projecting all voxels onto images...")
         for index in tqdm(range(self.grid_index.shape[0])):
             for image in images:
                 # determine if voxel is too far away
@@ -672,7 +686,7 @@ class voxel_labelled(voxel_label_base):
                 P_progress = n_occupied/float(n_occupied + n_empty)
                 print "Element %G progress has probability %f" % (element,
                                                                   P_progress)
-            
+
             element_probabilities[k] = P_progress
             k += 1
             if P_progress > t_predict:
