@@ -205,7 +205,7 @@ def import_BIM(fn, min_bound_coord, max_bound_coord, point_cloud_density):
     for k in elements_to_delete:
         del elements[k]
 
-    print "Generating point clouds of elements."
+    print "Generating point clouds of elements and assigning properties"
     # Sample points from every element to create a point cloud for each
     # element that can be used for voxelization.
     pbar = tqdm(range(len(elements)))
@@ -441,7 +441,7 @@ class voxel_label_reference(voxel_label_base):
 
     def project_voxels(self, camera, images):
         # threshold for maximum distance to consider a voxel visible
-        threshold = 3.0
+        threshold = 4.0
         # Easy access to creating voxel vertices
         grid_offset = np.array([[0, 0, 0],
                                 [0, 0, 1],
@@ -684,8 +684,8 @@ class voxel_labelled(voxel_label_base):
                 # print "Element %G is blocked from view." % (element)
             else:
                 P_progress = n_occupied/float(n_occupied + n_empty)
-                print "Element %G progress has probability %f" % (element,
-                                                                  P_progress)
+                # # print "Element %G progress has probability %f" % (element,
+                # #                                                   P_progress)
 
             element_probabilities[k] = P_progress
             k += 1
