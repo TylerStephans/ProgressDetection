@@ -2,6 +2,7 @@ import open3d.open3d as o3d
 import numpy as np
 # from skimage.morphology import convex_hull_image
 from scipy.spatial import ConvexHull, Delaunay
+from scipy.spatial.transform import Rotation as R
 from tqdm import tqdm   # adds loading bars!
 import copy
 import pandas as pd
@@ -78,8 +79,12 @@ def import_cameras_file(fn):
         cameras[k/2].camera_id = int(params[0])
         cameras[k/2].model = params[1]
         cameras[k/2].size = np.asarray((params[2:4]), dtype='int')
-        cameras[k/2].focal_length = float(params[4])
-        cameras[k/2].principal_pt = np.asarray(params[5:], dtype='float')
+        if cameras[k/2].model.upper() == "SIMPLE_PINHOLE":
+            cameras[k/2].distortion_coeffs[:2] = float(params[4])
+            cameras[k/2].distortion_coeffs[2:4] = np.asarray(params[5:], dtype='float')
+        elif cameras[k/2].model.upper() == "PINHOLE":
+            cameras[k/2].distortion_coeffs[:2] = np.asarray(params[4:6], dtype='float')
+            cameras[k/2].distortion_coeffs[2:4] = np.asarray(params[6:8], dtype='float')
 
     if len(cameras) == 1:
         return cameras[0]
@@ -87,7 +92,7 @@ def import_cameras_file(fn):
         return cameras
 
 
-def import_images_file(fn):
+def import_images_file(fn, tf_matrix=np.nan):
     '''
     Import an images.txt file from COLMAP and save a list of images
     '''
@@ -113,6 +118,19 @@ def import_images_file(fn):
         images[k/2].camera_id = int(params[8])
         images[k/2].name = params[9][:-2]
         images[k/2].calc_rotation_matrix()
+
+    if not np.all(np.isnan(tf_matrix)):
+        for k in range(len(images)):
+            # Transform quaternion
+            # First find DCM, then quaternion
+            scales = np.linalg.norm(tf_matrix[:3, :3], axis=0)
+            tf_dcm = tf_matrix[:3, :3]/np.tile(scales, (3, 1))
+            images[k].dcm = tf_dcm.dot(images[k].dcm.T).T
+            # I could probably use scipy for this more often...
+            images[k].quaternion = R.from_dcm(images[k].dcm.T).as_quat()
+
+            # Transform translation vector
+            images[k].translation = -images[k].dcm.dot(tf_matrix.dot(np.concatenate((-images[k].translation, [1])))[:3])
 
     return images
 
@@ -147,7 +165,8 @@ def import_BIM(fn, min_bound_coord, max_bound_coord, point_cloud_density):
     # Each item in materials is a material. For each material, an element is said
     # to be that material if material[0] is in its name.
     materials = [["Standard_Brick", "standard_brick"],
-                 ["CMU", "cmu"]]
+                 ["CMU", "cmu"],
+                 ["Family1_Family1", "foam_cmu"]]
 
     mesh_p = o3d.io.read_triangle_mesh(fn)
     print(mesh_p)
@@ -239,7 +258,7 @@ def import_BIM(fn, min_bound_coord, max_bound_coord, point_cloud_density):
         cur_material = [material[1] for material in materials
                         if material[0] in elements[k]['name']]
         if not cur_material:
-            print("Warning: no material found in " + elements[k])
+            print("Warning: no material found in " + elements[k]['name'])
         else:
             elements[k]['material'] = cur_material[0]
 
@@ -560,8 +579,8 @@ class voxel_labelled(voxel_label_base):
     # furthest from the image. Project the voxel onto the image plane and
     # check if it can be seen infront of other previously projected voxels. If
     # so then label it as occupied.
-    # To speed things up, I could have a check that if every voxel has been
-    # labelled as visible, then stop loop
+    # TODO: Correct the threshold to align with how it works in the paper
+    # you're citing
     def create_planned_labels(self, camera, images):
         # number of pixels which must be changed on the marker_board in order
         # for a voxel to be considered observed by an image
@@ -694,7 +713,8 @@ class voxel_labelled(voxel_label_base):
 
         return present_elements, element_probabilities
 
-    def visualize(self, label_to_plot, label_colors=None, plot_geometry=[]):
+    def visualize(self, label_to_plot, label_colors=None,
+                  element_highlight=[], plot_geometry=[]):
         pts = self.grid_index*self.voxel_size + self.origin
 
         # Create point cloud to generate voxel grid
@@ -719,8 +739,16 @@ class voxel_labelled(voxel_label_base):
         line_pts = np.concatenate([line_pt + pts for line_pt in line_pts_base],
                                   axis=0)
 
+        highlight_bool = np.zeros(self.length, dtype=bool)
+        for element in element_highlight:
+            highlight_bool = np.logical_or(highlight_bool, element==self.elements)
+        highlight_lines = np.tile(highlight_bool, line_base.shape[0])
+
         # Add voxel edges as a line set to the visualization
         line_colors = np.zeros([lines.shape[0], 3])
+        line_colors[highlight_lines, :] = np.array([[255.0, 217.0, 102.0]])/255.0
+        # # line_colors[highlight_lines, :] = np.ones([1, 3])
+        # # line_colors[highlight_lines, :] = np.array([[0.5, 0.5, 0.5]])
         line_set = o3d.geometry.LineSet()
         line_set.points = o3d.utility.Vector3dVector(line_pts)
         line_set.lines = o3d.utility.Vector2iVector(lines)
@@ -740,7 +768,7 @@ class voxel_labelled(voxel_label_base):
             labels = self.planned
         elif label_to_plot == "built":
             label_colors = np.array([[1, 0, 0],
-                                     [0, 1, 0],
+                                     [0, 204.0/255.0, 0], # [0, 204.0/255.0, 0]
                                      [0, 0, 0]])
             label_unique = np.array(["e", "o", "b"])
             labels = self.built
@@ -799,8 +827,8 @@ class camera:
         self.camera_id = -1
         self.model = ""
         self.size = np.zeros((2,))
-        self.focal_length = 0.0
-        self.principal_pt = np.array([0, 0])
+        # fx, fy, cx, cy, k1, k2, p1, p2, k3, k4, k5, k6
+        self.distortion_coeffs = np.zeros(12)
 
     # Given array of pts, return pixel coordinates in image
     def project_pt2image(self, pts, image):
@@ -808,8 +836,8 @@ class camera:
 
         M_ex = np.concatenate((image.dcm, image.translation[:, np.newaxis]),
                               axis=1)
-        M_in = np.array([[self.focal_length, 0, self.principal_pt[0]],
-                         [0, self.focal_length, self.principal_pt[1]],
+        M_in = np.array([[self.distortion_coeffs[0], 0, self.distortion_coeffs[2]],
+                         [0, self.distortion_coeffs[1], self.distortion_coeffs[3]],
                          [0,                 0,                 1.0]])
 
         p_h = M_in.dot(M_ex.dot(X.T))
@@ -817,6 +845,9 @@ class camera:
         # return the pixels such that y pixel values are in the first column
         # and x are in the second. This will make it easier to index with them
         return np.transpose(p_h[1::-1, :]/p_h[2, :])
+
+    def get_focal_length(self):
+        return self.distortion_coeffs[:2]
 
 
 class image:
