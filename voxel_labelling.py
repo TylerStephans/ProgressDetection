@@ -9,6 +9,7 @@ import pandas as pd
 import re
 import read_write_model_slim as read_write_model
 import os
+from multiprocessing import Pool
 
 # import pickle
 
@@ -184,7 +185,7 @@ def import_LinearPlan(fn, elements):
     for kr in tqdm(range(planIn.shape[0])):
         k_step = planIn.loc[kr, 'Step'] - 1
         for ke in range(len(elements)):
-            # THESIS EDIT: header was 'Block Number' before
+            # THESIS EDIT: header was 'Block Number' before but changed to ID
             if planIn.loc[kr, 'ID'] == elements[ke]['ID']:
                 linearPlan[k_step].append(ke)
 
@@ -193,13 +194,14 @@ def import_LinearPlan(fn, elements):
 
 def import_BIM(fn, min_bound_coord, max_bound_coord, point_cloud_density):
     # regular expression to find element ID in element name
-    elementIdExpression = r"\.\d{4}_" # THESIS EDIT: was \[\d{6}\] before
+    elementIdExpression = r"\[\d{6}\]" # THESIS EDIT: was \[\d{6}\] before but changed to \.\d{4}_
 
     # Each item in materials is a material. For each material, an element is said
     # to be that material if material[0] is in its name.
     materials = [["Standard_Brick", "standard_brick"],
                  ["CMU", "cmu"],
                  ["Family1_Family1", "foam_cmu"],
+                 ["Foam_CMU", "foam_cmu"],
                  ["padTile", "pad_tile"],
                  ["wallBrick", "wall_brick"],
                  ["wallSlope", "wall_slope"]]
@@ -211,7 +213,7 @@ def import_BIM(fn, min_bound_coord, max_bound_coord, point_cloud_density):
     vert_p = np.asarray(mesh_p.vertices)
 
     # parse .obj file to find indices of named objects (building elements)
-    print "Parsing *.obj file"
+    print("Parsing *.obj file")
     elements = []
 
     with open(fn) as f_obj:
@@ -235,7 +237,7 @@ def import_BIM(fn, min_bound_coord, max_bound_coord, point_cloud_density):
 
             k = k + 1
 
-    print "Removing elements outside of bounds."
+    print("Removing elements outside of bounds.")
     # Loop through every named object from the obj in reverse order, mark ones
     # which fall outside the specified bounds, and remove them.
     elements_to_delete = []
@@ -260,7 +262,7 @@ def import_BIM(fn, min_bound_coord, max_bound_coord, point_cloud_density):
     for k in elements_to_delete:
         del elements[k]
 
-    print "Generating point clouds of elements and assigning properties"
+    print("Generating point clouds of elements and assigning properties")
     # Sample points from every element to create a point cloud for each
     # element that can be used for voxelization.
     pbar = tqdm(range(len(elements)))
@@ -350,7 +352,7 @@ def voxelize_BIM(elements, voxel_size, min_bound_coord, max_bound_coord):
                                             min_bound_coord,
                                             max_bound_coord)
 
-    print "Labelling elements in reference voxel grid."
+    print("Labelling elements in reference voxel grid.")
     weights_ref = np.zeros([voxel_reference.length,
                             voxel_reference.elements.shape[1]])
     k_element = 0
@@ -400,6 +402,160 @@ def convex_fill(pixels, return_image=False, size=None):
     else:
         return out_idx
 
+def project_voxel(args):
+    grid_index = args[0]
+    voxel_size = args[1]
+    origin = args[2]
+    cameras = args[3]
+    images = args[4]
+    projection = []
+     # threshold for maximum distance to consider a voxel visible
+    threshold_max = 4.0
+    threshold_min = 0.2  # min distance for zed
+    # Easy access to creating voxel vertices
+    grid_offset = np.array([[0, 0, 0],
+                            [0, 0, 1],
+                            [0, 1, 0],
+                            [0, 1, 1],
+                            [1, 0, 0],
+                            [1, 0, 1],
+                            [1, 1, 0],
+                            [1, 1, 1]])
+
+    for image in images:
+        # find the camera used for this image
+        camera = [cam for cam in cameras if cam.camera_id == image.camera_id][0]
+
+        # determine if voxel is too far away
+        voxel_center = grid_index*voxel_size + \
+            voxel_size/2.0 + origin
+        image_xyz = image.dcm.T.dot(-image.translation)
+        voxel_distance = np.linalg.norm(voxel_center - image_xyz)
+        too_far = voxel_distance > threshold_max
+        too_close = voxel_distance < threshold_min
+
+        vertices = ((grid_offset + grid_index)
+                    * voxel_size + origin)
+
+        X = np.concatenate((vertices, np.ones([vertices.shape[0], 1])),
+                            axis=1)
+        M_ex = np.concatenate((image.dcm,
+                                image.translation[:, np.newaxis]),
+                                axis=1)
+        # voxel vertex coordinates in camera frame
+        vertices_c = M_ex.dot(X.T).T
+
+        # vertices onto image plane and return the pixel indices [y, x]
+        pixels = np.floor(camera.project_pt2image(vertices,
+                                                    image)).astype('int')
+
+        # which pixels fall within the image frame
+        inside_image = (np.all(pixels >= 0, axis=1) &
+                        np.all(pixels < np.flip(camera.size), axis=1))
+
+        # If at least one vertex of the voxel falls within the image
+        # bounds and is infront of the camera, project it onto the
+        # marking_board.
+        in_view = ((vertices_c[:, 2] > 0).any() and
+                    np.sum(inside_image) >= 1)
+        if in_view and not too_far and not too_close:
+            # indices of projection
+            ind_tmp = convex_fill(pixels)
+
+            if np.all(inside_image):
+                ind_pj = ind_tmp
+            else:  # remove indices outside bounds
+                ind_in = (np.all(ind_tmp >= 0, axis=1) &
+                            np.all(ind_tmp < np.flip(camera.size),
+                            axis=1))
+                ind_pj = ind_tmp[ind_in, :]
+
+            # NOTE: I'm assuming here that no image will have a size
+            # greater than np.iinfo('u2').max = 65535
+            projection.append(ind_pj.astype('u2'))
+        else:
+            projection.append(np.int8(-1))
+    
+    return projection
+
+def project_voxels(grid_index, voxel_size, origin, cameras, images):
+    ###grid_index = args[0]
+    ###voxel_size = args[1]
+    ###origin = args[2]
+    ###cameras = args[3]
+    ###images = args[4]
+
+    projections = [[] for k in range(grid_index.shape[0])]
+
+    # threshold for maximum distance to consider a voxel visible
+    threshold_max = 4.0
+    threshold_min = 0.2  # min distance for zed
+    # Easy access to creating voxel vertices
+    grid_offset = np.array([[0, 0, 0],
+                            [0, 0, 1],
+                            [0, 1, 0],
+                            [0, 1, 1],
+                            [1, 0, 0],
+                            [1, 0, 1],
+                            [1, 1, 0],
+                            [1, 1, 1]])
+
+    for index in range(grid_index.shape[0]):
+        for image in images:
+            # find the camera used for this image
+            camera = [cam for cam in cameras if cam.camera_id == image.camera_id][0]
+
+            # determine if voxel is too far away
+            voxel_center = grid_index[index, :]*voxel_size + \
+                voxel_size/2.0 + origin
+            image_xyz = image.dcm.T.dot(-image.translation)
+            voxel_distance = np.linalg.norm(voxel_center - image_xyz)
+            too_far = voxel_distance > threshold_max
+            too_close = voxel_distance < threshold_min
+
+            vertices = ((grid_offset + grid_index[index, :])
+                        * voxel_size + origin)
+
+            X = np.concatenate((vertices, np.ones([vertices.shape[0], 1])),
+                                axis=1)
+            M_ex = np.concatenate((image.dcm,
+                                    image.translation[:, np.newaxis]),
+                                    axis=1)
+            # voxel vertex coordinates in camera frame
+            vertices_c = M_ex.dot(X.T).T
+
+            # vertices onto image plane and return the pixel indices [y, x]
+            pixels = np.floor(camera.project_pt2image(vertices,
+                                                        image)).astype('int')
+
+            # which pixels fall within the image frame
+            inside_image = (np.all(pixels >= 0, axis=1) &
+                            np.all(pixels < np.flip(camera.size), axis=1))
+
+            # If at least one vertex of the voxel falls within the image
+            # bounds and is infront of the camera, project it onto the
+            # marking_board.
+            in_view = ((vertices_c[:, 2] > 0).any() and
+                        np.sum(inside_image) >= 1)
+            if in_view and not too_far and not too_close:
+                # indices of projection
+                ind_tmp = convex_fill(pixels)
+
+                if np.all(inside_image):
+                    ind_pj = ind_tmp
+                else:  # remove indices outside bounds
+                    ind_in = (np.all(ind_tmp >= 0, axis=1) &
+                                np.all(ind_tmp < np.flip(camera.size),
+                                axis=1))
+                    ind_pj = ind_tmp[ind_in, :]
+
+                # NOTE: I'm assuming here that no image will have a size
+                # greater than np.iinfo('u2').max = 65535
+                projections[index].append(ind_pj.astype('u2'))
+            else:
+                projections[index].append(np.int8(-1))
+    
+    return projections
 
 # Base class for labelling voxels
 class voxel_label_base:
@@ -494,9 +650,44 @@ class voxel_label_reference(voxel_label_base):
                     self.elements[k, more_index] = k_element
                 k_element = k_element + 1
 
+    def project_voxels_parallel(self, cameras, images):
+        n = 8
+
+        pool = Pool(processes=n)
+
+        args = [(self.grid_index[k,:], self.voxel_size, self.origin, cameras, images) for k in range(self.length)]
+        results = list(tqdm(pool.imap(project_voxel, args, chunksize=np.max([np.floor(self.length/2000), 1])), total=self.length))
+
+        self.projections = results
+
+    def project_voxels_parallel_async(self, cameras, images):
+        n = 8
+        inds_low = []
+        inds_high = []
+
+        pool = Pool(processes=n)
+        results = []
+        for k in range(n):
+            kf = float(k)
+            inds_low.append(np.floor(kf/n*self.grid_index.shape[0]).astype('int'))
+            inds_high.append(np.floor((kf+1)/n*self.grid_index.shape[0]).astype('int'))
+            #grid_indexes.append(self.grid_index[k_low:k_high,:])
+
+            results.append(pool.apply_async(project_voxels,
+                [self.grid_index[inds_low[k]:inds_high[k],:], self.voxel_size, self.origin, cameras, images]))
+
+        pool.close()
+        pool.join()
+
+        for k in range(n):
+            self.projections[inds_low[k]:inds_high[k]] = results[k].get()
+            # Remove in case of memory being used up
+            # del results[k]
+
     def project_voxels(self, cameras, images):
         # threshold for maximum distance to consider a voxel visible
-        threshold = 4.0
+        threshold_max = 5.0  # Was 4.0
+        threshold_min = 0.2  # min distance for zed
         # Easy access to creating voxel vertices
         grid_offset = np.array([[0, 0, 0],
                                 [0, 0, 1],
@@ -517,7 +708,8 @@ class voxel_label_reference(voxel_label_base):
                     self.voxel_size/2.0 + self.origin
                 image_xyz = image.dcm.T.dot(-image.translation)
                 voxel_distance = np.linalg.norm(voxel_center - image_xyz)
-                too_far = voxel_distance > threshold
+                too_far = voxel_distance > threshold_max
+                too_close = voxel_distance < threshold_min
 
                 vertices = ((grid_offset + self.grid_index[index, :])
                             * self.voxel_size + self.origin)
@@ -543,7 +735,7 @@ class voxel_label_reference(voxel_label_base):
                 # marking_board.
                 in_view = ((vertices_c[:, 2] > 0).any() and
                            np.sum(inside_image) >= 1)
-                if in_view and not too_far:
+                if in_view and not too_far and not too_close:
                     # indices of projection
                     ind_tmp = convex_fill(pixels)
 
@@ -555,9 +747,11 @@ class voxel_label_reference(voxel_label_base):
                                   axis=1))
                         ind_pj = ind_tmp[ind_in, :]
 
-                    self.projections[index].append(ind_pj)
+                    # NOTE: I'm assuming here that no image will have a size
+                    # greater than np.iinfo('u2').max = 65535
+                    self.projections[index].append(ind_pj.astype('u2'))
                 else:
-                    self.projections[index].append(np.NaN)
+                    self.projections[index].append(np.int8(-1))
 
     # Return a voxel_labelled class which only contains voxels labelled with
     # the desired_elements.
@@ -644,7 +838,7 @@ class voxel_labelled(voxel_label_base):
 
             for index in indices:
                 ind_pj = self.projections[index][k_image]
-                if ~np.any(np.isnan(ind_pj)):
+                if ~np.any(ind_pj < 0):  # At this point, all indices should be > 0
                     n_occluded = (np.sum(
                                   marking_board[ind_pj[:, 0], ind_pj[:, 1]]))
                     n_observed = ind_pj.shape[0] - n_occluded
