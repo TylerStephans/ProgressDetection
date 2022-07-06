@@ -14,33 +14,70 @@ import voxel_labelling as vl
 
 np.random.seed(0)
 
-# Inputs
-fn_setup = r"./autoplanner_setups/FoamCorner.pkl"
-fn_asPlanned = r"/home/tbs5111/IRoCS_BIM2Robot/Meshes/FoamCorner.obj"  # path for as-planned model
-fn_plan = r"/home/tbs5111/IRoCS_BIM2Robot/ProgressPredict/linear_plans/Foam_Corner_Plan_singles.csv"
+# # # # Inputs
+# # # fn_setup = r"./autoplanner_setups/FoamCorner.pkl"
+# # # fn_asPlanned = r"/home/tbs5111/IRoCS_BIM2Robot/Meshes/FoamCorner.obj"  # path for as-planned model
+# # # fn_plan = r"/home/tbs5111/IRoCS_BIM2Robot/ProgressPredict/linear_plans/Foam_Corner_Plan_singles_corrected.csv"
+# # # 
+# # # # inputs from COLMAP
+# # # location_date = "ND_20210720"
+# # # set_description = "01_HD2K_png_rect_all"
+# # # reconstruction_settings = "high"
+# # # output_name = "FoamCorner_ND_s10"
+# # # 
+# # # asBuilt_name = location_date + "/" + set_description + "/"
+# # # fn_tf_matrix = (
+# # #     r"/home/tbs5111/IRoCS_BIM2Robot/ProgressPredict/transformation_matrices/"
+# # #     + location_date + "_" + set_description + "_" + reconstruction_settings
+# # #     + "_to_FoamCorner.txt"
+# # # )
+# # # pn = r"./PhysicalDemos/initialTests/" + asBuilt_name
+# # # # All COLMAP files should be pulled from the dense model workspace.
+# # # # This is because the sparse model within the dense model workspace is already
+# # # # corrected for distortions, which this script does not.
+# # # fn_asBuilt = (
+# # #     r"/home/tbs5111/IRoCS_BIM2Robot/SfM/PhysicalDemo/ZED_only/" +
+# # #     asBuilt_name + r"/dense/high/fused.ply"
+# # # )
+# # # fn_cameras = (
+# # #     r"/home/tbs5111/IRoCS_BIM2Robot/SfM/PhysicalDemo/ZED_only/" +
+# # #     asBuilt_name + r"/dense/high/sparse/cameras.bin"
+# # # )
+# # # fn_images = (
+# # #     r"/home/tbs5111/IRoCS_BIM2Robot/SfM/PhysicalDemo/ZED_only/" +
+# # #     asBuilt_name + r"/dense/high/sparse/images.bin"
+# # # )
 
-# # step_name = "s10"  # name of step files to input
-# # pn = r"./foundation_01/array01/" + step_name + r"/"  # directory for outputs
-# # output_name = "FoamBricks_corner10_" + step_name + ""  # base name for output files
+# Inputs
+fn_setup = r"./autoplanner_setups/jezero03_padnwall_1inVoxel_setup.pkl"
+fn_asPlanned = r"/home/tbs5111/IRoCS_BIM2Robot/Meshes/landingPad_blastWall02_rotatedyfzu.obj"  # path for as-planned model
+fn_plan = r"/home/tbs5111/IRoCS_BIM2Robot/ProgressPredict/linear_plans/landingPad_blastWall_by8.csv"
+
+# step = 19
+step_name = "s15"  # name of step files to input
+pn = r"./Jezero03_testing_noon/array08/" + step_name + r"/"  # directory for outputs
+output_name = "jezero03_noon_array08_" + step_name + ""  # base name for output files
 # inputs from COLMAP
-asBuilt_name = "ND_20210706/" + "01_HD2K_png_raw_all_PS/"
-pn = r"./PhysicalDemos/initialTests/" + asBuilt_name
-output_name = "FoamCorner_ND_s10"
+asBuilt_name = "array08_TAA_protex130_extra_" + step_name
+fn_tf_matrix = (
+    r"/home/tbs5111/IRoCS_BIM2Robot/ProgressPredict/transformation_matrices/" +
+    "identity.txt")
 fn_asBuilt = (
-    r"/home/tbs5111/IRoCS_BIM2Robot/SfM/PhysicalDemo/" +
-    asBuilt_name + r"/dense/gui_high/fused.ply"
+    r"/home/tbs5111/IRoCS_BIM2Robot/SfM/Jezero03/testing/" +
+    asBuilt_name + r"/dense/high/fused.ply"
 )
 fn_cameras = (
-    r"/home/tbs5111/IRoCS_BIM2Robot/SfM/PhysicalDemo/" +
-    asBuilt_name + r"/sparse/gui_high_text/cameras.txt"
+    r"/home/tbs5111/IRoCS_BIM2Robot/SfM/Jezero03/testing/" +
+    asBuilt_name + r"/sparse/high/aligned/cameras.bin"
 )
 fn_images = (
-    r"/home/tbs5111/IRoCS_BIM2Robot/SfM/PhysicalDemo/" +
-    asBuilt_name + r"/sparse/gui_high_text/images.txt"
+    r"/home/tbs5111/IRoCS_BIM2Robot/SfM/Jezero03/testing/" +
+    asBuilt_name + r"/sparse/high/aligned/images.bin"
 )
 
 # If true, then only import BIM and model data, and save to file
 only_import = False
+write_instructions = True
 # Loop through every step in plan to populate prediction board for heatmap
 plot_heatmap = True
 visualize_voxel_labels = True
@@ -53,15 +90,7 @@ point_cloud_density = 10/voxel_size**2  # number of points / surface area
 
 # Transformation matrix for transforming as-built model and image locations to BIM coordinates
 # for FoamBricks_corner10.obj
-# # tf_matrix = np.array([[0.020649148151, 0.003730252851, -0.017093285918, -9.120858192444],
-# #                       [-0.000062758474, -0.026426136494, -0.005842766259, 0.770334780216],
-# #                       [-0.017495464534, 0.004497451708, -0.020153515041, -0.812347292900],
-# #                       [0.000000000000, 0.000000000000, 0.000000000000, 1.000000000000]])
-# for FoamCorner.obj
-tf_matrix = np.array([[0.017727660015, 0.004500174429, -0.019925508648, -9.791061401367],
-                      [0.001042874414, -0.026547614485, -0.005067934748, 0.703504800797],
-                      [-0.020400732756, 0.002553424565, -0.017573773861, -0.874332547188],
-                      [0.000000000000, 0.000000000000, 0.000000000000, 1.000000000000]])
+tf_matrix = vl.import_transformMatrix(fn_tf_matrix)
 
 # bounding box coordinates with about 2 cm tolerance
 # construction area bounds
@@ -74,8 +103,14 @@ tf_matrix = np.array([[0.017727660015, 0.004500174429, -0.019925508648, -9.79106
 # # min_bound_coord = np.array([-11, -0.02, -3])
 # # max_bound_coord = np.array([-9, 1, -1])
 # FoamCorner.obj bounds
-min_bound_coord = np.array([-11.38, -0.02, -2.32])
-max_bound_coord = np.array([-10.55, 1, -1.30])
+# # min_bound_coord = np.array([-11.38, -0.02, -2.32])
+# # max_bound_coord = np.array([-10.55, 1, -1.30])
+# FoamCornerLarge.obj bounds
+# min_bound_coord = np.array([-11.38, -0.02, -2.32])
+# max_bound_coord = np.array([-9.37, 1, -0.12])
+# landingPad_blastWall02.obj bounds
+min_bound_coord = np.array([3.0, 3.0, -0.1])
+max_bound_coord = np.array([7.0, 7.0, 1.0])
 
 print "Starting import... \n"
 if only_import:
@@ -181,13 +216,13 @@ if not only_import:
 
         prediction_board[:len(cur_elements), step-1] = element_Ps[index_sort][index_reorder]
 
-        # # voxel_labelled.visualize(
-        # #     "elements",
-        # #     np.array([elements[k]['color'] for k in range(len(elements))]))
+        ###voxel_labelled.visualize(
+        ###    "elements",
+        ###    np.array([elements[k]['color'] for k in range(len(elements))]))
 
-        # # voxel_labelled.visualize("planned")
+        ###voxel_labelled.visualize("planned")
 
-        # # voxel_labelled.visualize("built", plot_geometry=[pcd_b])
+        ###voxel_labelled.visualize("built", plot_geometry=[pcd_b.crop(o3d.geometry.AxisAlignedBoundingBox(min_bound_coord, max_bound_coord))])
 
         # Found a step where all elements for the kth step were found, so the
         # current step must have been the last one checked!
@@ -220,7 +255,7 @@ if not only_import:
     if visualize_voxel_labels and not np.isnan(cur_step):
         # For when the pcd_b is so large it makes navigating the gui difficult...
         box = o3d.utility.Vector3dVector(np.concatenate([min_bound_coord[np.newaxis, :]-10, max_bound_coord[np.newaxis, :]+10], axis=0))
-        bounding_box = o3d.geometry.AxisAlignedBoundingBox.create_from_points(box)
+        bounding_box = o3d.geometry.AxisAlignedBoundingBox(min_bound_coord-10, max_bound_coord+10)
 
         # Adding coordinate frames to visualize images
         vis_images = []
@@ -232,8 +267,9 @@ if not only_import:
             vis_images.append(mesh_temp)
 
         plot_list = [pcd_b.crop(bounding_box)]
-        plot_list.extend(vis_images)
-        voxels_current_step.visualize("built", element_highlight=BIM_order[cur_step-2], plot_geometry=[pcd_b.crop(bounding_box)])
+        #plot_list = [pcd_b]
+        #plot_list.extend(vis_images)
+        voxels_current_step.visualize("built", element_highlight=BIM_order[cur_step-2], plot_geometry=plot_list)
 
     if plot_heatmap:
         # index of last visible element in prediction board
@@ -308,22 +344,23 @@ if not only_import:
                     str(plan_traversal_time))
             f.write("Current step detected as: %.0f\n" % cur_step)
 
-    print "Writing instructions for material placement."
-    fn_instructions = output_name + "_NextInstr.txt"
+    if write_instructions:
+        print "Writing instructions for material placement."
+        fn_instructions = output_name + "_NextInstr.txt"
 
-    # Instructions for the robot with one list item for each object to place
-    instructions = []
-    if np.isnan(cur_step):
-        instructions.append('Current step could not be determined...')
-    elif cur_step > len(BIM_order):
-        instructions.append('Construction was finished (no current step).')
-    else:
-        for k in BIM_order[cur_step - 1]:
-            instructions.append(elements[k]['material'])
+        # Instructions for the robot with one list item for each object to place
+        instructions = []
+        if np.isnan(cur_step):
+            instructions.append('Current step could not be determined...')
+        elif cur_step > len(BIM_order):
+            instructions.append('Construction was finished (no current step).')
+        else:
+            for k in BIM_order[cur_step - 1]:
+                instructions.append(elements[k]['material'])
 
-    with open(pn + fn_instructions, "w") as f:
-        for instruction in instructions:
-            f.write("%s\n" % instruction)
+        with open(pn + fn_instructions, "w") as f:
+            for instruction in instructions:
+                f.write("%s\n" % instruction)
 else:
     print "Import completed after " + str(datetime.now() - startTime)
 

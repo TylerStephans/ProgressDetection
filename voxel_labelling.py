@@ -7,6 +7,8 @@ from tqdm import tqdm   # adds loading bars!
 import copy
 import pandas as pd
 import re
+import read_write_model_slim as read_write_model
+import os
 
 # import pickle
 
@@ -57,67 +59,65 @@ def triangle_mesh_volume(mesh):
     return np.abs(volume)
 
 
-# Import cameras.txt file from COLMAP and save a list of cameras.
-# If there is only one cameras specified, then it just returns a camera.
 def import_cameras_file(fn):
-    with open(fn) as f_obj:
-        lines_obj = f_obj.readlines()
-
-    # remove comments
-    k = 0
-    non_whitespace = len(lines_obj[k]) - len(lines_obj[k].lstrip())
-    while lines_obj[k][non_whitespace] == "#":
-        k = k + 1
-        non_whitespace = len(lines_obj[k]) - len(lines_obj[k].lstrip())
-    lines_obj = lines_obj[k:]
+    '''
+    Import cameras file from COLMAP and save a list of cameras.
+    NOTE: All camera models must be either SIMPLE_PINHOLE or PINHOLE models
+    (no distortions). Use the sparse model in the dense reconstruction folder
+    if using distorted images in COLMAP.
+    '''
+    filename, file_extension = os.path.splitext(fn)
+    if file_extension == ".txt":
+        col_cams = read_write_model.read_cameras_text(fn)
+    elif file_extension == ".bin":
+        col_cams = read_write_model.read_cameras_binary(fn)
+    else:
+        print("Cameras file is not in supported format...")
 
     cameras = []
 
-    for k in range(0, len(lines_obj), 2):
+    k = 0
+    for k_id in col_cams:
         cameras.append(camera())
-        params = lines_obj[k].split(" ")
-        cameras[k/2].camera_id = int(params[0])
-        cameras[k/2].model = params[1]
-        cameras[k/2].size = np.asarray((params[2:4]), dtype='int')
-        if cameras[k/2].model.upper() == "SIMPLE_PINHOLE":
-            cameras[k/2].distortion_coeffs[:2] = float(params[4])
-            cameras[k/2].distortion_coeffs[2:4] = np.asarray(params[5:], dtype='float')
-        elif cameras[k/2].model.upper() == "PINHOLE":
-            cameras[k/2].distortion_coeffs[:2] = np.asarray(params[4:6], dtype='float')
-            cameras[k/2].distortion_coeffs[2:4] = np.asarray(params[6:8], dtype='float')
+        cameras[k].camera_id = col_cams[k_id].id
+        cameras[k].model = col_cams[k_id].model
+        cameras[k].size = np.asarray((col_cams[k_id].width, col_cams[k_id].height), dtype='int')
+        # If reading a simple pinhole model from a text file, then there might only be 3 distortion coefficients
+        if col_cams[k_id].params.shape[0] == 3:
+            cameras[k].distortion_coeffs = np.append(col_cams[k_id].params, col_cams[k_id].params[2])
+        else:
+            cameras[k].distortion_coeffs = col_cams[k_id].params
+        k += 1
 
-    if len(cameras) == 1:
-        return cameras[0]
-    else:
-        return cameras
+    return cameras
 
 
 def import_images_file(fn, tf_matrix=np.nan):
     '''
-    Import an images.txt file from COLMAP and save a list of images
+    Import an images.txt file from COLMAP and save a list of images.
+    Supplying a 4x4 transformation matrix tf_matrix to apply a transform to
+    every image.
     '''
-    with open(fn) as f_obj:
-        lines_obj = f_obj.readlines()
-
-    # remove comments
-    k = 0
-    non_whitespace = len(lines_obj[k]) - len(lines_obj[k].lstrip())
-    while lines_obj[k][non_whitespace] == "#":
-        k = k + 1
-        non_whitespace = len(lines_obj[k]) - len(lines_obj[k].lstrip())
-    lines_obj = lines_obj[k:]
+    filename, file_extension = os.path.splitext(fn)
+    if file_extension == ".txt":
+        col_ims = read_write_model.read_images_text(fn)
+    elif file_extension == ".bin":
+        col_ims = read_write_model.read_images_binary(fn)
+    else:
+        print("Images file is not in supported format...")
 
     images = []
 
-    for k in range(0, len(lines_obj), 2):
+    k = 0
+    for k_id in col_ims:
         images.append(image())
-        params = lines_obj[k].split(" ")
-        images[k/2].image_id = int(params[0])
-        images[k/2].quaternion = np.asarray(params[1:5], dtype='float')
-        images[k/2].translation = np.asarray(params[5:8], dtype='float')
-        images[k/2].camera_id = int(params[8])
-        images[k/2].name = params[9][:-2]
-        images[k/2].calc_rotation_matrix()
+        images[k].image_id = col_ims[k_id].id
+        images[k].quaternion = col_ims[k_id].qvec
+        images[k].translation = col_ims[k_id].tvec
+        images[k].camera_id = col_ims[k_id].camera_id
+        images[k].name = col_ims[k_id].name
+        images[k].calc_rotation_matrix()
+        k += 1
 
     if not np.all(np.isnan(tf_matrix)):
         for k in range(len(images)):
@@ -125,14 +125,46 @@ def import_images_file(fn, tf_matrix=np.nan):
             # First find DCM, then quaternion
             scales = np.linalg.norm(tf_matrix[:3, :3], axis=0)
             tf_dcm = tf_matrix[:3, :3]/np.tile(scales, (3, 1))
+
+            # Find position of image
+            image_pos = images[k].dcm.T.dot(-images[k].translation)
+
             images[k].dcm = tf_dcm.dot(images[k].dcm.T).T
             # I could probably use scipy for this more often...
             images[k].quaternion = R.from_dcm(images[k].dcm.T).as_quat()
 
             # Transform translation vector
-            images[k].translation = -images[k].dcm.dot(tf_matrix.dot(np.concatenate((-images[k].translation, [1])))[:3])
+            # This is incorrect!!!
+            # dumb_translation = -images[k].dcm.dot(tf_matrix.dot(np.concatenate((-images[k].translation, [1])))[:3])
+            images[k].translation = -images[k].dcm.dot(tf_matrix.dot(np.concatenate((image_pos, [1])))[:3])
 
     return images
+
+
+def import_transformMatrix(fn):
+    '''
+    Import transformation matrix from text file. Matrix must directly follow a
+    line containing "transformation matrix:". The matrix is the following four
+    lines, where each line has four numbers separated by spaces.
+    '''
+    tf_matrix = np.zeros((4, 4))
+
+    print("Importing transformation matrix.")
+    with open(fn) as f_obj:
+        lines_obj = f_obj.readlines()
+
+    k = 0
+    found_tf = False
+    while not found_tf and k < len(lines_obj):
+        if "transformation matrix:" in lines_obj[k].lower():
+            found_tf = True
+            for j in range(4):
+                tf_matrix[j, :] = np.array(lines_obj[k+1+j].split()).astype(float)
+
+        k += 1
+    if not found_tf:
+        print("Could not find transformation matrix in the file...")
+    return tf_matrix
 
 
 def import_LinearPlan(fn, elements):
@@ -152,7 +184,8 @@ def import_LinearPlan(fn, elements):
     for kr in tqdm(range(planIn.shape[0])):
         k_step = planIn.loc[kr, 'Step'] - 1
         for ke in range(len(elements)):
-            if planIn.loc[kr, 'Block Number'] == elements[ke]['ID']:
+            # THESIS EDIT: header was 'Block Number' before
+            if planIn.loc[kr, 'ID'] == elements[ke]['ID']:
                 linearPlan[k_step].append(ke)
 
     return linearPlan
@@ -160,13 +193,16 @@ def import_LinearPlan(fn, elements):
 
 def import_BIM(fn, min_bound_coord, max_bound_coord, point_cloud_density):
     # regular expression to find element ID in element name
-    elementIdExpression = r"\[\d{6}\]"
+    elementIdExpression = r"\.\d{4}_" # THESIS EDIT: was \[\d{6}\] before
 
     # Each item in materials is a material. For each material, an element is said
     # to be that material if material[0] is in its name.
     materials = [["Standard_Brick", "standard_brick"],
                  ["CMU", "cmu"],
-                 ["Family1_Family1", "foam_cmu"]]
+                 ["Family1_Family1", "foam_cmu"],
+                 ["padTile", "pad_tile"],
+                 ["wallBrick", "wall_brick"],
+                 ["wallSlope", "wall_slope"]]
 
     mesh_p = o3d.io.read_triangle_mesh(fn)
     print(mesh_p)
@@ -458,7 +494,7 @@ class voxel_label_reference(voxel_label_base):
                     self.elements[k, more_index] = k_element
                 k_element = k_element + 1
 
-    def project_voxels(self, camera, images):
+    def project_voxels(self, cameras, images):
         # threshold for maximum distance to consider a voxel visible
         threshold = 4.0
         # Easy access to creating voxel vertices
@@ -473,6 +509,9 @@ class voxel_label_reference(voxel_label_base):
 
         for index in tqdm(range(self.grid_index.shape[0])):
             for image in images:
+                # find the camera used for this image
+                camera = [cam for cam in cameras if cam.camera_id == image.camera_id][0]
+
                 # determine if voxel is too far away
                 voxel_center = self.grid_index[index, :]*self.voxel_size + \
                     self.voxel_size/2.0 + self.origin
@@ -581,7 +620,7 @@ class voxel_labelled(voxel_label_base):
     # so then label it as occupied.
     # TODO: Correct the threshold to align with how it works in the paper
     # you're citing
-    def create_planned_labels(self, camera, images):
+    def create_planned_labels(self, cameras, images):
         # number of pixels which must be changed on the marker_board in order
         # for a voxel to be considered observed by an image
         threshold = 20
@@ -593,6 +632,9 @@ class voxel_labelled(voxel_label_base):
         pbar = tqdm(images)
         k_image = 0
         for image in pbar:
+            # find the camera used for this image
+            camera = [cam for cam in cameras if cam.camera_id == image.camera_id][0]
+
             marking_board = np.zeros(np.flip(camera.size), dtype='u1')
 
             # Loop through voxels in order of distance from the image
